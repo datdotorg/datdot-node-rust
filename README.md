@@ -1,2 +1,2 @@
 # datdot
-dat p2p pinning service
+dat p2p seeding service
