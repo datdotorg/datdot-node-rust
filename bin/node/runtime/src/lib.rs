@@ -67,6 +67,10 @@ use constants::{time::*, currency::*};
 
 // Datdot modules.
 mod dat_verify;
+<<<<<<< HEAD
+=======
+mod dispatchcenter;
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 
 // Make the WASM binary available.
 #[cfg(feature = "std")]
@@ -482,7 +486,10 @@ impl nicks::Trait for Runtime {
 
 impl dat_verify::Trait for Runtime {
 	type Event = Event;
+<<<<<<< HEAD
 	type Randomness = RandomnessCollectiveFlip;
+=======
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 }
 
 impl system::offchain::CreateTransaction<Runtime, UncheckedExtrinsic> for Runtime {
@@ -546,7 +553,11 @@ construct_runtime!(
 		Offences: offences::{Module, Call, Storage, Event},
 		RandomnessCollectiveFlip: randomness_collective_flip::{Module, Call, Storage},
 		Nicks: nicks::{Module, Call, Storage, Event<T>},
+<<<<<<< HEAD
 		DatVerify: dat_verify::{Module, Call, Storage, Event<T>},
+=======
+		DatVerify: dat_verify::{Module<T>, Call, Storage, Event},
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 	}
 );
 

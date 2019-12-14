@@ -16,8 +16,12 @@ use support::{
 	decl_error,
 	ensure,
 	StorageValue,
+<<<<<<< HEAD
 	StorageMap,
 	traits::Randomness
+=======
+	StorageMap
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 };
 use sp_std::convert::{TryInto, TryFrom};
 use system::{ensure_signed, ensure_root};
@@ -28,10 +32,14 @@ use primitives::{
 	Blake2Hasher, 
 	H256
 };
+<<<<<<< HEAD
 use sp_runtime::{
 	RuntimeDebug,
 	traits::Verify
 };
+=======
+use sp_runtime::traits::Verify;
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 
 pub type Public = ed25519::Public;
 pub type Signature = ed25519::Signature;
@@ -39,10 +47,17 @@ pub type Signature = ed25519::Signature;
 /// The module's configuration trait.
 pub trait Trait: system::Trait{
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+<<<<<<< HEAD
 	type Randomness: Randomness<Self::Hash>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+=======
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 pub struct Node {
 	index: u64,
 	hash: H256,
@@ -148,7 +163,12 @@ impl Node {
 	}
 }
 
+<<<<<<< HEAD
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+=======
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 pub struct Proof {
 	index: u64,
 	nodes: Vec<Node>,
@@ -157,7 +177,12 @@ pub struct Proof {
 
 
 //https://datprotocol.github.io/how-dat-works/#hashes-and-signatures
+<<<<<<< HEAD
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+=======
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 pub struct ChunkHashPayload {
 	hash_type: u8, //0
 	chunk_length: u64,
@@ -165,7 +190,12 @@ pub struct ChunkHashPayload {
 }
 
 
+<<<<<<< HEAD
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+=======
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 pub struct ParentHashPayload {
 	hash_type: u8, //1
 	total_length: u64,
@@ -173,7 +203,12 @@ pub struct ParentHashPayload {
 }
 
 
+<<<<<<< HEAD
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+=======
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 pub struct ParentHashInRoot {
 	hash: H256,
 	hash_number: u64,
@@ -181,12 +216,18 @@ pub struct ParentHashInRoot {
 }
 
 
+<<<<<<< HEAD
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+=======
+#[derive(Decode, PartialEq, Eq, Encode, Clone)]
+#[cfg_attr(feature = "std", derive(Debug))]
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 pub struct RootHashPayload {
 	hash_type: u8, //2
 	children: Vec<ParentHashInRoot>
 }
 
+<<<<<<< HEAD
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Attestation {
@@ -195,6 +236,8 @@ pub struct Attestation {
 	latency: Option<u8> //may be failure.
 }
 
+=======
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 type DatIdIndex = u64;
 type DatIdVec = Vec<DatIdIndex>;
 type UserIdIndex = u64; 
@@ -210,7 +253,10 @@ decl_event!(
 		SomethingUnstored(DatIdIndex, Public),
 		Challenge(AccountId,BlockNumber),
 		NewPin(AccountId, Public),
+<<<<<<< HEAD
 		Attest(AccountId, Attestation),
+=======
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 	}
 );
 
@@ -256,7 +302,11 @@ decl_module! {
 			// if no one is currently selected to give proof, select someone
 			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
+<<<<<<< HEAD
 				let new_random = (<randomness_collective_flip::Module<T>>::random_seed(), nonce)
+=======
+				let new_random = (<system::Module<T>>::random_seed(), nonce)
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
@@ -285,12 +335,17 @@ decl_module! {
 		fn submit_attestation(origin, attestation: Attestation) {
 			let attestor = ensure_signed(origin)?;
 			// TODO: verify you have been requested an attestation
+<<<<<<< HEAD
 			let challenge = (
 				<SelectedUser<T>>::get(),
 				<system::Module<T>>::block_number(),
 			);
 			// TODO: remove challenge iff threshold is met
 			Self::deposit_event(RawEvent::Attest(attestor, attestation));
+=======
+			let challenge = (<SelectedUser<T>>::get(), <system::Module<T>>::block_number());
+			Self::deposit_event(RawEvent::Attest(attestor, attestation, challenge));
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 		}
 
 		//test things progressively, doing quicker computations first.
@@ -307,7 +362,11 @@ decl_module! {
 			);
 			ensure!(
 				&signature.verify(
+<<<<<<< HEAD
 					unsigned_root_hash.as_bytes(),
+=======
+					&unsigned_root_hash.as_bytes(),
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 					&challenge.0
 				),
 				"Signature verification failed"
@@ -383,7 +442,11 @@ decl_module! {
 			//verify the signature
 			ensure!(
 				&merkle_root.2.verify(
+<<<<<<< HEAD
 					root_hash.as_bytes(),
+=======
+					&root_hash.as_bytes(),
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 					&pubkey
 					),
 				"Signature Verification Failed"
@@ -469,7 +532,11 @@ decl_module! {
 			match dat_vec.last() {
 				Some(last_index) => {
 				let nonce = <Nonce>::get();
+<<<<<<< HEAD
 				let new_random = (<randomness_collective_flip::Module<T>>::random_seed(), &nonce, &account)
+=======
+				let new_random = (<system::Module<T>>::random_seed(), &nonce, &account)
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");

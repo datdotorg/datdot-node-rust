@@ -4,6 +4,7 @@ a p2p solution for hosting files with Dat protocol
 
 datdot code is currently located in `bin/node`
 
+<<<<<<< HEAD
 currently datdot modules and runtime are "spliced" into the default substrate node cli - complete with governance and ink! smart contract modules enabled. After the runtime module has a stable api, the scaffolding will be reduced and this repo will consist of a minimal test node and FRAME pallet.
 
 to build the datdot dev runtime, run:
@@ -19,6 +20,11 @@ add the `--release` flag to either of those commands to create a release build -
 ``` 
 
     Datdot is built using Substrate - Original Readme:
+=======
+``` 
+
+    Datdot is built using Substrate - Original Readme
+>>>>>>> 4db98981314c55e40311f8e6dc570565b51477a2
 
 ```
 # Substrate &middot; [![GitHub license](https://img.shields.io/github/license/paritytech/substrate)](LICENSE) [![GitLab Status](https://gitlab.parity.io/parity/substrate/badges/master/pipeline.svg)](https://gitlab.parity.io/parity/substrate/pipelines) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](docs/CONTRIBUTING.adoc)
