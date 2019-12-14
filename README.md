@@ -6,6 +6,8 @@ datdot code is currently located in `bin/node`
 
 currently datdot modules and runtime are "spliced" into the default substrate node cli - complete with governance and ink! smart contract modules enabled. After the runtime module has a stable api, the scaffolding will be reduced and this repo will consist of a minimal test node and FRAME pallet.
 
+### Building
+
 to build the datdot dev runtime, run:
 
 `cargo build -p node-runtime`
@@ -14,7 +16,11 @@ to build the test node, run:
 
 `cargo build -p node-cli`
 
-add the `--release` flag to either of those commands to create a release build - debug and release builds will be located in `./target`
+add the `--release` flag to either of those commands to create a release build - debug and release builds will be located in `./target/release` or `./target/debug`
+
+### Running
+
+currently, executing `./target/release/substrate --dev` runs a dev node. You can interact with this node by using the [Polkadot.js Apps UI](https://polkadot.js.org/apps/) - selecting "local node" as your endpoint in the settings page should connect you to your node; however, until you [specify the additional types](https://polkadot.js.org/api/start/types.extend.html#user-defined-types) in the developer tab, all functionality of the Apps UI will remain disabled. 
 
 ``` 
 
