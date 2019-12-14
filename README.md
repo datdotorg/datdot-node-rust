@@ -2,9 +2,11 @@
 a p2p solution for hosting files with Dat protocol
 ![](https://i.imgur.com/oGPIbZQ.jpg)
 
+datdot code is currently located in `bin/node`
+
 ``` 
 
-    Original Readme - Datdot is built using Substrate
+    Datdot is built using Substrate - Original Readme
 
 ```
 # Substrate &middot; [![GitHub license](https://img.shields.io/github/license/paritytech/substrate)](LICENSE) [![GitLab Status](https://gitlab.parity.io/parity/substrate/badges/master/pipeline.svg)](https://gitlab.parity.io/parity/substrate/pipelines) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](docs/CONTRIBUTING.adoc)
