@@ -65,21 +65,25 @@ use impls::{CurrencyToVoteHandler, Author, LinearWeightToFee, TargetedFeeAdjustm
 pub mod constants;
 use constants::{time::*, currency::*};
 
+// Datdot modules.
+mod dat_verify;
+mod dispatchcenter;
+
 // Make the WASM binary available.
 #[cfg(feature = "std")]
 include!(concat!(env!("OUT_DIR"), "/wasm_binary.rs"));
 
 /// Runtime version.
 pub const VERSION: RuntimeVersion = RuntimeVersion {
-	spec_name: create_runtime_str!("node"),
-	impl_name: create_runtime_str!("substrate-node"),
+	spec_name: create_runtime_str!("datdot"),
+	impl_name: create_runtime_str!("datdot-zero"),
 	authoring_version: 10,
 	// Per convention: if the runtime behavior changes, increment spec_version
 	// and set impl_version to equal spec_version. If only runtime
 	// implementation changes and behavior does not, then leave spec_version as
 	// is and increment impl_version.
-	spec_version: 198,
-	impl_version: 198,
+	spec_version: 1,
+	impl_version: 1,
 	apis: RUNTIME_API_VERSIONS,
 };
 
@@ -477,6 +481,10 @@ impl nicks::Trait for Runtime {
 	type MaxLength = MaxLength;
 }
 
+impl dat_verify::Trait for Runtime {
+	type Event = Event;
+}
+
 impl system::offchain::CreateTransaction<Runtime, UncheckedExtrinsic> for Runtime {
 	type Public = <Signature as traits::Verify>::Signer;
 	type Signature = Signature;
@@ -538,6 +546,7 @@ construct_runtime!(
 		Offences: offences::{Module, Call, Storage, Event},
 		RandomnessCollectiveFlip: randomness_collective_flip::{Module, Call, Storage},
 		Nicks: nicks::{Module, Call, Storage, Event<T>},
+		DatVerify: dat_verify::{Module<T>, Call, Storage, Event},
 	}
 );
 
