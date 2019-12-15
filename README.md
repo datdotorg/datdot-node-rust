@@ -1,7 +1,7 @@
 # DatDot
 a p2p solution for hosting files with Dat protocol
 
-[join our telegram chat](https://t.me/joinchat/CgTftxXJvp6iYayqDjP7lQ) => will move to cabal soon
+[join our telegram chat](https://t.me/joinchat/CgTftxXJvp6iYayqDjP7lQ)
 
 ![](https://i.imgur.com/oGPIbZQ.jpg)
 
