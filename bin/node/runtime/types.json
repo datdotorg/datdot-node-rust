@@ -1,0 +1,40 @@
+{
+	"Node": {
+		"index": "u64",
+		"hash": "H256",
+		"size": "u64"
+	},
+	"Proof": {
+		"index": "u64",
+		"nodes": "Vec<Node>",
+		"signature": "Option<Signature>"
+	},
+	"ChunkHashPayload": {
+		"hash_type": "u8",
+		"chunk_length": "u64",
+		"chunk_content": "Vec<u8>"
+	},
+	"ParentHashPayload": {
+		"hash_type": "u8",
+		"total_length": "u64",
+		"child_hashes": "[H256; 2]"
+	},
+	"ParentHashInRoot": {
+		"hash": "H256",
+		"hash_number": "u64",
+		"total_length": "u64"
+	},
+	"RootHashPayload": {
+		"hash_type": "u8",
+		"children": "Vec<ParentHashInRoot>"
+	},
+	"Attestation": {
+		"location": "u8",
+		"latency": "Option<u8>"
+	},
+	"DatIdIndex": "u64",
+	"DatIdVec": "Vec<DatIdIndex>",
+	"UserIdIndex": "u64",
+	"DatSize": "u64",
+	"Public": "[u8; 32]"
+}

@@ -3165,10 +3165,10 @@ dependencies = [
  "pallet-elections-phragmen 2.0.0",
  "pallet-finality-tracker 2.0.0",
  "pallet-grandpa 2.0.0",
+ "pallet-identity 2.0.0",
  "pallet-im-online 0.1.0",
  "pallet-indices 2.0.0",
  "pallet-membership 2.0.0",
- "pallet-nicks 2.0.0",
  "pallet-offences 1.0.0",
  "pallet-randomness-collective-flip 2.0.0",
  "pallet-session 2.0.0",
@@ -6076,6 +6076,7 @@ dependencies = [
 name = "sp-application-crypto-test"
 version = "2.0.0"
 dependencies = [
+ "sp-application-crypto 2.0.0",
  "sp-core 2.0.0",
  "sp-runtime 2.0.0",
  "substrate-test-runtime-client 2.0.0",

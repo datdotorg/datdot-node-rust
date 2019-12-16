@@ -9,7 +9,8 @@
 /// https://github.com/paritytech/substrate/blob/master/srml/example/src/lib.rs
 
 use sp_std::prelude::*;
-use support::{
+use sp_std::fmt::Debug;
+use frame_support::{
 	decl_module,
 	decl_storage, 
 	decl_event,
@@ -17,12 +18,14 @@ use support::{
 	ensure,
 	StorageValue,
 	StorageMap,
-	traits::Randomness
+	traits::Randomness,
+	Parameter
 };
 use sp_std::convert::{TryInto, TryFrom};
-use system::{ensure_signed, ensure_root};
+use frame_system::{ensure_signed, ensure_root};
+use frame_system as system;
 use codec::{Encode, Decode};
-use primitives::{
+use sp_core::{
 	ed25519,
 	Hasher,
 	Blake2Hasher, 
@@ -30,7 +33,14 @@ use primitives::{
 };
 use sp_runtime::{
 	RuntimeDebug,
-	traits::Verify
+	traits::{
+		Verify,
+		CheckEqual,
+		SimpleBitOps,
+		MaybeDisplay,
+		MaybeSerializeDeserialize,
+		Member
+	}
 };
 
 pub type Public = ed25519::Public;
@@ -39,7 +49,10 @@ pub type Signature = ed25519::Signature;
 /// The module's configuration trait.
 pub trait Trait: system::Trait{
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
-	type Randomness: Randomness<Self::Hash>;
+	type Hash: 
+	Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + SimpleBitOps
+	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
+	type Randomness: Randomness<<Self as system::Trait>::Hash>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -256,7 +269,7 @@ decl_module! {
 			// if no one is currently selected to give proof, select someone
 			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
-				let new_random = (<randomness_collective_flip::Module<T>>::random_seed(), nonce)
+				let new_random = (T::Randomness::random(b"dat_verify"), nonce)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
@@ -469,7 +482,7 @@ decl_module! {
 			match dat_vec.last() {
 				Some(last_index) => {
 				let nonce = <Nonce>::get();
-				let new_random = (<randomness_collective_flip::Module<T>>::random_seed(), &nonce, &account)
+				let new_random = (T::Randomness::random(b"dat_verify"), &nonce, &account)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
