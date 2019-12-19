@@ -62,7 +62,6 @@ pub struct Node {
 	size: u64
 }
 
-//todo: 'from' the different HashPayload types
 impl Node {
 	fn height(&self) -> u64 {
 		Self::get_height(self.index)
@@ -124,7 +123,7 @@ impl Node {
 	fn highest_at_index(max_index : u64) -> u64 {
 		//max_index == 2^n - 2
 		//return n
-		//needs tests, this was written using trail and error.
+		//TODO: needs tests, this was written using trail and error.
 		let mut current_index = Some(max_index);
 		let mut current_height : u64 = 0;
 		while current_index.unwrap_or(0) > 2u64.pow(current_height.try_into().unwrap()) {
@@ -233,7 +232,7 @@ decl_storage! {
 		// A vec of free indeces, with the last item usable for `len`
 		DatId get(next_id): DatIdVec;
 		// Each dat archive has a public key
-		DatKey get(public_key): map DatIdIndex => Public;
+		DatKey get(public_key): map hasher(twox_256) DatIdIndex => Public;
 		// Each dat archive has a tree size
 		// TODO: remove calls to this when expecting indeces
 		TreeSize get(tree_size): map Public => DatSize;
@@ -241,7 +240,7 @@ decl_storage! {
 		MerkleRoot get(merkle_root): map Public => (H256, Signature);
 		// users are put into an "array"
 		UsersCount: u64;
-		Users get(user): map UserIdIndex => T::AccountId;
+		Users get(user): map hasher(twox_256) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
 		UsersStorage: map T::AccountId => Vec<Public>;
 		// each dat has a vec of users pinning it
@@ -250,10 +249,16 @@ decl_storage! {
 		UserRequestsMap: map Public => T::AccountId;
 
 		// current check condition
-		SelectedUser: T::AccountId;
+		ChallengeIndex: u64;
+		UserIndex: u64;
+		// Challenge => User
+		ChallengeMap: linked_map hasher(twox_256) u64 => u64;
 		// Dat and which index to verify
-		SelectedDat: (Public, u64);
-		TimeLimit get(time_limit): T::BlockNumber;
+		SelectedChallenges: map hasher(twox_256) u64 => (Public, u64, T::BlockNumber);
+		RemovedDats: Vec<Public>;
+		SelectedUsers: map hasher(twox_256) u64 => T::AccountId;
+		// (index, challenge count)
+		SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u32);
 		Nonce: u64;
 	}
 }
@@ -264,12 +269,13 @@ decl_module! {
 
 		fn on_initialize(n: T::BlockNumber) {
 			let dat_vec = <DatId>::get();
+			let challenge_index = <ChallengeIndex>::get();
 			match dat_vec.last() {
 				Some(last_index) => {
 			// if no one is currently selected to give proof, select someone
-			if !<SelectedUser<T>>::exists() && <UsersCount>::get() > 0 {
+			if !<ChallengeMap>::exists(&challenge_index) && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
-				let new_random = (T::Randomness::random(b"dat_verify"), nonce)
+				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
@@ -284,10 +290,22 @@ decl_module! {
 					.expect("Users must not have empty storage; Qed");
 				let dat_tree_len = <TreeSize>::get(random_dat);
 				let random_leave = new_random % dat_tree_len;
-				<SelectedDat>::put((random_dat.clone(), random_leave));
-				<SelectedUser<T>>::put(&random_user);
-				<TimeLimit<T>>::put(future_block);
+				let mut y = 0;
+				if !<SelectedUserIndex<T>>::exists(&random_user) {
+					let user_index = <UserIndex>::get();
+					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
+					<UserIndex>::mutate(|m| *m += 1);
+					y = user_index;
+				} else {
+					let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
+					<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
+					y = user_index;
+				}
+				<SelectedChallenges<T>>::insert(&challenge_index, (random_dat.clone(), random_leave, future_block));
+				<SelectedUsers<T>>::insert(&y, &random_user);
+				<ChallengeMap>::insert(challenge_index, y);
 				<Nonce>::mutate(|m| *m += 1);
+				<ChallengeIndex>::mutate(|m| *m += 1);
 				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
 			}},
 				None => (),
@@ -298,23 +316,20 @@ decl_module! {
 		fn submit_attestation(origin, attestation: Attestation) {
 			let attestor = ensure_signed(origin)?;
 			// TODO: verify you have been requested an attestation
-			let challenge = (
-				<SelectedUser<T>>::get(),
-				<system::Module<T>>::block_number(),
-			);
 			// TODO: remove challenge iff threshold is met
 			Self::deposit_event(RawEvent::Attest(attestor, attestation));
 		}
 
 		//test things progressively, doing quicker computations first.
-		fn submit_proof(origin, proof: Proof, unsigned_root_hash: H256, chunk_content: Vec<u8>) {
+		fn submit_proof(origin, challenge_index: u64, proof: Proof, unsigned_root_hash: H256, chunk_content: Vec<u8>) {
 			let account = ensure_signed(origin)?;
+			let account_index = <ChallengeMap>::get(&challenge_index);
 			ensure!(
-				account == <SelectedUser<T>>::get(),
+				account == <SelectedUsers<T>>::get(&account_index),
 				"Only the current challengee can respond to their challenge"
 			);
 			let index_proved = proof.index;
-			let challenge = <SelectedDat>::get();
+			let challenge = <SelectedChallenges<T>>::get(&challenge_index);
 			let signature = proof.signature.expect(
 				"Proof should be signed"
 			);
@@ -376,12 +391,17 @@ decl_module! {
 				root_hash == unsigned_root_hash,
 				"Root hash verification failed"
 			);
-			//TODO:
-			// verify roots and direct ancestors of the proved chunk_hash
-				//charge archive pinner (FUTURE: scale by some burn_factor)
-				//reward and unselect prover
-				//reward must be greater than charge!
-			<SelectedUser<T>>::kill();
+
+			//TODO: clear completed challenge.
+			let (_, count) = <SelectedUserIndex<T>>::get(&account);
+			if count-1 == 0 {
+				<SelectedUsers<T>>::remove(account_index);
+				<SelectedUserIndex<T>>::remove(account);
+			} else {
+				<SelectedUserIndex<T>>::insert(account, (account_index, count-1));
+			}
+			<SelectedChallenges<T>>::remove(challenge_index);
+			<ChallengeMap>::remove(challenge_index);
 			// else let the user try again until time limit
 		}
 
@@ -468,21 +488,24 @@ decl_module! {
 			<TreeSize>::remove(&pubkey);
 			<MerkleRoot>::remove(&pubkey);
 			//if the dat being unregistered is currently part of the challenge
-			if (<SelectedDat>::get().0 == pubkey){
-				<SelectedUser<T>>::kill();
+			let mut tmp : Vec<Public> = Vec::new();
+			if <RemovedDats>::exists() {
+				tmp = <RemovedDats>::get();	
 			}
+			tmp.push(pubkey);
+			<RemovedDats>::put(tmp);
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
 		}
 
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
-		fn register_backup(origin) {
+		fn register_seeder(origin) {
 			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
 			let dat_vec = <DatId>::get();
 			match dat_vec.last() {
 				Some(last_index) => {
 				let nonce = <Nonce>::get();
-				let new_random = (T::Randomness::random(b"dat_verify"), &nonce, &account)
+				let new_random = (T::Randomness::random(b"dat_verify_register"), &nonce, &account)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("Hash must be bigger than 8 bytes; Qed");
@@ -509,14 +532,41 @@ decl_module! {
 			}
 		}
 
+		//TODO: unregister own intention to pin dats/ go offline.
+		fn unregister_seeder(origin) {
+			//
+			()
+		}
+
+		//TODO: this is probably bad and should probably go into an offchain worker.
+		//
 		fn on_finalize(n: T::BlockNumber) {
-			let user = <SelectedUser<T>>::get();
-			let dat = <SelectedDat>::get().0;
-			if (n == Self::time_limit()) {
-				<SelectedUser<T>>::kill();
-			} else {
-				//charge fee*
+			for (dat_index, user_index) in <ChallengeMap>::enumerate() {
+				let user = <SelectedUsers<T>>::get(user_index);
+				let dat = <SelectedChallenges<T>>::get(dat_index).0;
+				let time = <SelectedChallenges<T>>::get(dat_index).2;
+				if (n == time) {
+					<SelectedUsers<T>>::remove(user_index);
+					<SelectedUserIndex<T>>::remove(user);
+					<SelectedChallenges<T>>::remove(dat_index);
+					<ChallengeMap>::remove(dat_index);
+					//punish
+				} else {
+					if <RemovedDats>::get().contains(&dat) {
+						let (_, count) = <SelectedUserIndex<T>>::get(&user);
+						if count-1 == 0 {
+							<SelectedUsers<T>>::remove(user_index);
+							<SelectedUserIndex<T>>::remove(user);
+						} else {
+							<SelectedUserIndex<T>>::insert(user, (user_index, count-1));
+						}
+						<SelectedChallenges<T>>::remove(dat_index);
+						<ChallengeMap>::remove(dat_index);
+					}
+					//charge fee*
+				}
 			}
+			<RemovedDats>::kill();
 		}
 	}
 }
