@@ -392,7 +392,6 @@ decl_module! {
 				"Root hash verification failed"
 			);
 
-			//TODO: clear completed challenge.
 			let (_, count) = <SelectedUserIndex<T>>::get(&account);
 			if count-1 == 0 {
 				<SelectedUsers<T>>::remove(account_index);
@@ -421,7 +420,23 @@ decl_module! {
 					),
 				"Signature Verification Failed"
 			);
+			let temporary_root = system::RawOrigin::Root;
+			// the rest of the logic is already in force_register_data so, just call that function.
+			Self::force_register_data(temporary_root.into(), account, merkle_root);
+		}
+
+		//debug method when you don't have valid data for register_data, no validity checks, only root.
+		fn force_register_data(
+			origin,
+			account: T::AccountId,
+			merkle_root: (Public, RootHashPayload, Signature)
+		)
+		{
+			let pubkey = merkle_root.0;
+			let mut lowest_free_index : DatIdIndex = 0;
 			let mut tree_size : u64 = u64::min_value();
+			let root_hash = merkle_root.1
+				.using_encoded(|b| Blake2Hasher::hash(b));
 			for child in merkle_root.1.children {
 				tree_size += child.total_length
 			}
@@ -447,6 +462,7 @@ decl_module! {
 			<TreeSize>::insert(&pubkey, tree_size);
 			<UserRequestsMap<T>>::insert(&pubkey, &account);
 			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
+			
 		}
 
 		//user stops requesting others pin their data
@@ -550,7 +566,7 @@ decl_module! {
 					<SelectedUserIndex<T>>::remove(user);
 					<SelectedChallenges<T>>::remove(dat_index);
 					<ChallengeMap>::remove(dat_index);
-					//punish
+					//todo punish
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
 						let (_, count) = <SelectedUserIndex<T>>::get(&user);
@@ -563,7 +579,7 @@ decl_module! {
 						<SelectedChallenges<T>>::remove(dat_index);
 						<ChallengeMap>::remove(dat_index);
 					}
-					//charge fee*
+					//todo charge fee*
 				}
 			}
 			<RemovedDats>::kill();
