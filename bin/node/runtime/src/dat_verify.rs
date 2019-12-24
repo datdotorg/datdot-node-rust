@@ -36,6 +36,7 @@ use sp_runtime::{
 	traits::{
 		Verify,
 		CheckEqual,
+		EnsureOrigin,
 		SimpleBitOps,
 		MaybeDisplay,
 		MaybeSerializeDeserialize,
@@ -53,6 +54,7 @@ pub trait Trait: system::Trait{
 	Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + SimpleBitOps
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
+	type ForceOrigin: EnsureOrigin<<Self as system::Trait>::Origin>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -221,10 +223,26 @@ decl_event!(
 		SomethingStored(DatIdIndex, Public),
 		SomethingUnstored(DatIdIndex, Public),
 		Challenge(AccountId,BlockNumber),
+		ChallengeFailed(AccountId, Public),
 		NewPin(AccountId, Public),
 		Attest(AccountId, Attestation),
 	}
 );
+
+decl_error! {
+    /// Errors that can occur in my module.
+    pub enum Errors for Module<T: Trait> {
+		PermissionError,
+		UnsignedProof,
+		VerificationFailed,
+		ProvesWrongChunk,
+		MissingLeaf,
+		ChunkHashVerificationFailed,
+		RootHashVerificationFailed,
+		InvalidState
+    }
+}
+
 
 // Dat related storage items.
 decl_storage! {
@@ -275,10 +293,10 @@ decl_module! {
 			// if no one is currently selected to give proof, select someone
 			if !<ChallengeMap>::exists(&challenge_index) && <UsersCount>::get() > 0 {
 				let nonce = <Nonce>::get();
-				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
+				let new_random = (T::Randomness::random(&b"dat_verify_init"[..]), nonce)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
-					.expect("Hash must be bigger than 8 bytes; Qed");
+					.unwrap_or(Err(Errors::<T>::InvalidState.into()));
 				let new_time_limit = new_random % last_index;
 				let future_block = 
 					n + T::BlockNumber::from(new_time_limit.try_into().unwrap_or(2));
@@ -287,7 +305,7 @@ decl_module! {
 				let users_dats = <UsersStorage<T>>::get(&random_user);
 				let users_dats_len = users_dats.len();
 				let random_dat = users_dats.get(new_random as usize % users_dats_len)
-					.expect("Users must not have empty storage; Qed");
+					.unwrap_or(Err(Errors::<T>::InvalidState.into()));
 				let dat_tree_len = <TreeSize>::get(random_dat);
 				let random_leave = new_random % dat_tree_len;
 				let mut y = 0;
@@ -320,29 +338,44 @@ decl_module! {
 			Self::deposit_event(RawEvent::Attest(attestor, attestation));
 		}
 
+		fn force_clear_challenge(origin, account, challenge_index){
+			T::ForceOrigin::try_origin(origin)
+				.map(|_| ())
+				.or_else(ensure_root)?;
+			let account_index = <ChallengeMap>::get(&challenge_index);
+			let (_, count) = <SelectedUserIndex<T>>::get(&account);
+			if count-1 == 0 {
+				<SelectedUsers<T>>::remove(account_index);
+				<SelectedUserIndex<T>>::remove(account);
+			} else {
+				<SelectedUserIndex<T>>::insert(account, (account_index, count-1));
+			}
+			<SelectedChallenges<T>>::remove(challenge_index);
+			<ChallengeMap>::remove(challenge_index);
+		}
 		//test things progressively, doing quicker computations first.
 		fn submit_proof(origin, challenge_index: u64, proof: Proof, unsigned_root_hash: H256, chunk_content: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			let account_index = <ChallengeMap>::get(&challenge_index);
 			ensure!(
 				account == <SelectedUsers<T>>::get(&account_index),
-				"Only the current challengee can respond to their challenge"
+				Err(Errors::<T>::PermissionError.into())
 			);
 			let index_proved = proof.index;
 			let challenge = <SelectedChallenges<T>>::get(&challenge_index);
-			let signature = proof.signature.expect(
-				"Proof should be signed"
+			let signature = proof.signature.unwrap_or(
+				Err(Errors::<T>::UnsignedProof.into())
 			);
 			ensure!(
 				&signature.verify(
 					unsigned_root_hash.as_bytes(),
 					&challenge.0
 				),
-				"Signature verification failed"
+				Err(Errors::<T>::VerificationFailed.into())
 			);
 			ensure!(
 				index_proved == challenge.1,
-				"Proof is for the wrong chunk"
+				Err(Errors::<T>::ProvesWrongChunk.into())
 			);
 			let payload = ChunkHashPayload{
 				hash_type : 0,
@@ -354,16 +387,16 @@ decl_module! {
 			let node_indeces : Vec<u64> = proof_nodes.clone().into_iter().map(|m| {
 					m.index
 				}).collect();
-			let leaf_node_index : usize = node_indeces.binary_search(&index_proved).expect(
-				"Leaf node should exist"
+			let leaf_node_index : usize = node_indeces.binary_search(&index_proved).unwrap_or(
+				Err(Errors::<T>::MissingLeaf.into())
 			);
-			let leaf_node : &Node = proof_nodes.get(leaf_node_index).expect(
-				"Leaf node should exist"
+			let leaf_node : &Node = proof_nodes.get(leaf_node_index).unwrap_or(
+				Err(Errors::<T>::MissingLeaf.into())
 			);
 			let provided_chunk_hash = leaf_node.hash;
 			ensure!(
 				chunk_hash == provided_chunk_hash,
-				"Could not verify chunk hash"
+				Err(Errors::<T>::ChunkHashVerificationFailed.into())
 			);
 			let root_indeces = Node::get_orphan_indeces(index_proved);
 			let mut root_nodes : Vec<ParentHashInRoot> = Vec::new();
@@ -389,18 +422,10 @@ decl_module! {
 				.using_encoded(|b| Blake2Hasher::hash(b));
 			ensure!(
 				root_hash == unsigned_root_hash,
-				"Root hash verification failed"
+				Err(Errors::<T>::RootHashVerificationFailed.into())
 			);
-
-			let (_, count) = <SelectedUserIndex<T>>::get(&account);
-			if count-1 == 0 {
-				<SelectedUsers<T>>::remove(account_index);
-				<SelectedUserIndex<T>>::remove(account);
-			} else {
-				<SelectedUserIndex<T>>::insert(account, (account_index, count-1));
-			}
-			<SelectedChallenges<T>>::remove(challenge_index);
-			<ChallengeMap>::remove(challenge_index);
+			let temporary_root = system::RawOrigin::Root;
+			Self::force_clear_challenge(temporary_root.into(), account, challenge_index);
 			// else let the user try again until time limit
 		}
 
@@ -418,7 +443,7 @@ decl_module! {
 					root_hash.as_bytes(),
 					&pubkey
 					),
-				"Signature Verification Failed"
+				Err(Errors::<T>::VerificationFailed.into())
 			);
 			let temporary_root = system::RawOrigin::Root;
 			// the rest of the logic is already in force_register_data so, just call that function.
@@ -432,6 +457,9 @@ decl_module! {
 			merkle_root: (Public, RootHashPayload, Signature)
 		)
 		{
+			T::ForceOrigin::try_origin(origin)
+				.map(|_| ())
+				.or_else(ensure_root)?;
 			let pubkey = merkle_root.0;
 			let mut lowest_free_index : DatIdIndex = 0;
 			let mut tree_size : u64 = u64::min_value();
@@ -440,6 +468,10 @@ decl_module! {
 			for child in merkle_root.1.children {
 				tree_size += child.total_length
 			}
+			ensure!(
+				(tree_size => 1),
+				Err(Errors::<T>::InvalidTreeSize.into())
+			);
 			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			if !<MerkleRoot>::exists(&pubkey){
 				match dat_vec.first() {
@@ -472,7 +504,7 @@ decl_module! {
 			//only allow owner to unregister
 			ensure!(
 				<UserRequestsMap<T>>::get(&pubkey) == account,
-				"Cannot unregister archive, not owner."
+				Err(Errors::<T>::PermissionError.into())
 			);
 			let mut dat_vec = <DatId>::get();
 			match dat_vec.last() {
@@ -521,11 +553,12 @@ decl_module! {
 			match dat_vec.last() {
 				Some(last_index) => {
 				let nonce = <Nonce>::get();
-				let new_random = (T::Randomness::random(b"dat_verify_register"), &nonce, &account)
+				let new_random = (T::Randomness::random(&b"dat_verify_register"[..]), &nonce, &account)
 					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
-					.expect("Hash must be bigger than 8 bytes; Qed");
-				let random_index = new_random % last_index;
+					.unwrap_or(Err(Errors::<T>::InvalidState.into()));
+				//+1 so you never have challenges due the block they are created.
+				let random_index = (new_random % last_index)+1;
 				let dat_pubkey = DatKey::get(random_index);
 				let mut current_user_dats = <UsersStorage<T>>::get(&account);
 				let mut dat_hosters = <DatHosters<T>>::get(&dat_pubkey);
@@ -557,27 +590,21 @@ decl_module! {
 		//TODO: this is probably bad and should probably go into an offchain worker.
 		//
 		fn on_finalize(n: T::BlockNumber) {
-			for (dat_index, user_index) in <ChallengeMap>::enumerate() {
+			for (challenge_index, user_index) in <ChallengeMap>::enumerate() {
 				let user = <SelectedUsers<T>>::get(user_index);
-				let dat = <SelectedChallenges<T>>::get(dat_index).0;
-				let time = <SelectedChallenges<T>>::get(dat_index).2;
+				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
+				let time = <SelectedChallenges<T>>::get(challenge_index).2;
 				if (n == time) {
 					<SelectedUsers<T>>::remove(user_index);
 					<SelectedUserIndex<T>>::remove(user);
-					<SelectedChallenges<T>>::remove(dat_index);
-					<ChallengeMap>::remove(dat_index);
+					<SelectedChallenges<T>>::remove(challenge_index);
+					<ChallengeMap>::remove(challenge_index);
 					//todo punish
+					Self::deposit_event(RawEvent::ChallengeFailed(random_user, dat));
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
-						let (_, count) = <SelectedUserIndex<T>>::get(&user);
-						if count-1 == 0 {
-							<SelectedUsers<T>>::remove(user_index);
-							<SelectedUserIndex<T>>::remove(user);
-						} else {
-							<SelectedUserIndex<T>>::insert(user, (user_index, count-1));
-						}
-						<SelectedChallenges<T>>::remove(dat_index);
-						<ChallengeMap>::remove(dat_index);
+						let temporary_root = system::RawOrigin::Root;
+						Self::force_clear_challenge(temporary_root.into(), user, challenge_index);
 					}
 					//todo charge fee*
 				}

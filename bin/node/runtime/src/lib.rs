@@ -487,6 +487,7 @@ impl dat_verify::Trait for Runtime {
 	type Event = Event;
 	type Randomness = RandomnessCollectiveFlip;
 	type Hash = Hash;
+	type ForceOrigin = pallet_collective::EnsureMember<AccountId, CouncilCollective>;
 }
 
 impl frame_system::offchain::CreateTransaction<Runtime, UncheckedExtrinsic> for Runtime {
