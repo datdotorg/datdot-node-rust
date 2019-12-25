@@ -128,7 +128,7 @@ impl frame_system::Trait for Runtime {
 	type MaximumBlockLength = MaximumBlockLength;
 	type AvailableBlockRatio = AvailableBlockRatio;
 	type Version = Version;
-	type ModuleToIndex = ();
+	type ModuleToIndex = ModuleToIndex;
 }
 
 parameter_types! {
