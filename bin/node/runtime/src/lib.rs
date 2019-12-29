@@ -563,7 +563,7 @@ construct_runtime!(
 		Offences: pallet_offences::{Module, Call, Storage, Event},
 		RandomnessCollectiveFlip: pallet_randomness_collective_flip::{Module, Call, Storage},
 		Identity: pallet_identity::{Module, Call, Storage, Event<T>},
-		DatVerify: dat_verify::{Module, Call, Storage, Event<T>},
+		DatVerify: dat_verify::{Module, Call, Storage, Event<T>, Error},
 	}
 );
 
