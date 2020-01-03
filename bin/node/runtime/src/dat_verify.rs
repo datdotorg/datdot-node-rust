@@ -16,10 +16,14 @@ use frame_support::{
 	decl_event,
 	decl_error,
 	ensure,
+	fail,
 	StorageValue,
 	StorageMap,
-	traits::Randomness,
-	Parameter
+	Parameter,
+	traits::{
+		Randomness,
+		ChangeMembers,
+	},
 };
 use sp_std::convert::{TryInto, TryFrom};
 use frame_system::{
@@ -58,6 +62,8 @@ pub trait Trait: system::Trait{
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
 	type ForceOrigin: EnsureOrigin<<Self as system::Trait>::Origin>;
+	type SeederMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
+	type UserMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -444,7 +450,10 @@ decl_module!{
 				Error::<T>::RootHashVerificationFailed
 			);
 			let temporary_root = system::RawOrigin::Root;
-			Self::force_clear_challenge(temporary_root.into(), account, challenge_index);
+			match Self::force_clear_challenge(temporary_root.into(), account, challenge_index) {
+				Ok(x) => x,
+				Err(x) => fail!(x),
+			}
 			// else let the user try again until time limit
 		}
 
@@ -466,7 +475,10 @@ decl_module!{
 			);
 			let temporary_root = system::RawOrigin::Root;
 			// the rest of the logic is already in force_register_data so, just call that function.
-			Self::force_register_data(temporary_root.into(), account, merkle_root);
+			match Self::force_register_data(temporary_root.into(), account, merkle_root) {
+				Ok(x) => x,
+				Err(x) => fail!(x),
+			}
 		}
 
 		//debug method when you don't have valid data for register_data, no validity checks, only root.
