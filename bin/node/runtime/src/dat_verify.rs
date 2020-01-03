@@ -302,8 +302,9 @@ decl_module!{
 				.using_encoded(|mut b| u64::decode(&mut b))
 				.expect("hash must be of correct size; Qed");
 				let new_time_limit = new_random % last_index;
+				let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
 				let future_block = 
-					n + T::BlockNumber::from(new_time_limit.try_into().unwrap_or(2));
+					n + T::BlockNumber::from(challenge_length);
 				let random_user_index = new_random % <UsersCount>::get();
 				let random_user = <Users<T>>::get(random_user_index);
 				let users_dats = <UsersStorage<T>>::get(&random_user);
