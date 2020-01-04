@@ -461,7 +461,6 @@ decl_module!{
 		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
-			let mut lowest_free_index : DatIdIndex = 0;
 			let root_hash = merkle_root.1
 				.using_encoded(|b| Blake2Hasher::hash(b));
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
@@ -508,13 +507,12 @@ decl_module!{
 				match dat_vec.first() {
 					Some(index) => {
 						lowest_free_index = dat_vec.remove(0);
-						if dat_vec.is_empty() {
-							dat_vec.push(lowest_free_index + 1);
-						}
+						dat_vec.push(lowest_free_index + 1);
 					},
 					None => {
 						//add an element if the vec is empty
 						dat_vec.push(1);
+						lowest_free_index = 1;
 					},
 				}
 				//register new unknown dats
