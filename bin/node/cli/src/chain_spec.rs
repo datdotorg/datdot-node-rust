@@ -20,9 +20,9 @@ use sc_chain_spec::ChainSpecExtension;
 use sp_core::{Pair, Public, crypto::UncheckedInto, sr25519};
 use serde::{Serialize, Deserialize};
 use node_runtime::{
-	AuthorityDiscoveryConfig, BabeConfig, BalancesConfig, ContractsConfig, CouncilConfig, DemocracyConfig,
+	AuthorityDiscoveryConfig, BabeConfig, BalancesConfig, CouncilConfig, DemocracyConfig,
 	GrandpaConfig, ImOnlineConfig, IndicesConfig, SessionConfig, SessionKeys, StakerStatus, StakingConfig, SudoConfig,
-	SystemConfig, TechnicalCommitteeConfig, WASM_BINARY,
+	SystemConfig, TechnicalCommitteeConfig, DatCollectiveConfig, WASM_BINARY,
 };
 use node_runtime::Block;
 use node_runtime::constants::currency::*;
@@ -268,12 +268,10 @@ pub fn testnet_genesis(
 				.collect::<Vec<_>>()[..(num_endowed_accounts + 1) / 2].to_vec(),
 			phantom: Default::default(),
 		}),
-		pallet_contracts: Some(ContractsConfig {
-			current_schedule: pallet_contracts::Schedule {
-				enable_println, // this should only be enabled on development chains
-				..Default::default()
-			},
-			gas_price: 1 * MILLICENTS,
+		pallet_collective_Instance3: Some(DatCollectiveConfig {
+			members: endowed_accounts.iter().cloned()
+				.collect::<Vec<_>>()[..(num_endowed_accounts + 1) / 2].to_vec(),
+			phantom: Default::default(),
 		}),
 		pallet_sudo: Some(SudoConfig {
 			key: root_key,
@@ -291,7 +289,6 @@ pub fn testnet_genesis(
 			authorities: vec![],
 		}),
 		pallet_membership_Instance1: Some(Default::default()),
-		pallet_treasury: Some(Default::default()),
 	}
 }
 

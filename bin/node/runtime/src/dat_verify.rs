@@ -506,8 +506,11 @@ decl_module!{
 			if !<MerkleRoot>::exists(&pubkey){
 				match dat_vec.first() {
 					Some(index) => {
+						dat_vec.sort_unstable();
 						lowest_free_index = dat_vec.remove(0);
 						dat_vec.push(lowest_free_index + 1);
+						dat_vec.sort_unstable();
+						dat_vec.dedup();
 					},
 					None => {
 						//add an element if the vec is empty
