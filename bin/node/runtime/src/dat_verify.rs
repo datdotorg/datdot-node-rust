@@ -318,7 +318,10 @@ decl_module!{
 				let random_dat = users_dats.get(new_random as usize % users_dats_len)
 					.expect("user_dats is not sparse and user_dats_len is the len, so get must not fail.");
 				let dat_tree_len = <TreeSize>::get(&random_dat);
-				let random_leave = new_random % dat_tree_len;
+				let mut random_leave = 0;
+				if dat_tree_len != 0 { // avoid 0 divisor 
+					random_leave = new_random % dat_tree_len;
+				} 
 				let mut y = 0;
 				if !<SelectedUserIndex<T>>::exists(&random_user) {
 					let user_index = <UserIndex>::get();
@@ -496,16 +499,16 @@ decl_module!{
 			let root_hash = merkle_root.1
 				.using_encoded(|b| Blake2Hasher::hash(b));
 			for child in merkle_root.1.children {
-				tree_size += child.total_length
+				tree_size += child.total_length;
 			}
 			ensure!(
-				(tree_size >= 1),
+				tree_size >= 1,
 				Error::<T>::InvalidTreeSize
 			);
 			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			if !<MerkleRoot>::exists(&pubkey){
 				match dat_vec.first() {
-					Some(index) => {
+					Some(_) => {
 						dat_vec.sort_unstable();
 						lowest_free_index = dat_vec.remove(0);
 						dat_vec.push(lowest_free_index + 1);
@@ -515,7 +518,7 @@ decl_module!{
 					None => {
 						//add an element if the vec is empty
 						dat_vec.push(1);
-						lowest_free_index = 1;
+						lowest_free_index = 0;
 					},
 				}
 				//register new unknown dats
