@@ -50,7 +50,7 @@ fn main() -> Result<(), sc_cli::error::Error> {
 		commit: env!("VERGEN_SHA_SHORT"),
 		version: env!("CARGO_PKG_VERSION"),
 		executable_name: "datdot-node",
-		author: "Parity Technologies <admin@parity.io>",
+		author: "Datdot Authors <placeholder@email.com>",
 		description: "Datdot Service Node",
 		support_url: "https://github.com/playproject-io/datdot",
 	};

@@ -269,7 +269,7 @@ decl_storage! {
 		UsersCount: u64;
 		Users get(user): map hasher(twox_256) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
-		UsersStorage: map T::AccountId => Vec<Public>;
+		UsersStorage: map T::AccountId => Vec<DatIdIndex>;
 		// each dat has a vec of users pinning it
 		DatHosters: map Public => Vec<T::AccountId>;
 		// each user has a mapping and vec of dats they want seeded
@@ -315,14 +315,15 @@ decl_module!{
 				let random_user = <Users<T>>::get(random_user_index);
 				let users_dats = <UsersStorage<T>>::get(&random_user);
 				let users_dats_len = users_dats.len();
-				let random_dat = users_dats.get(new_random as usize % users_dats_len)
+				let random_dat_id = users_dats.get(new_random as usize % users_dats_len)
 					.expect("user_dats is not sparse and user_dats_len is the len, so get must not fail.");
+				let random_dat = <DatKey>::get(random_dat_id);
 				let dat_tree_len = <TreeSize>::get(&random_dat);
 				let mut random_leave = 0;
 				if dat_tree_len != 0 { // avoid 0 divisor 
 					random_leave = new_random % dat_tree_len;
 				} 
-				let mut y = 0;
+				let y : u64;
 				if !<SelectedUserIndex<T>>::exists(&random_user) {
 					let user_index = <UserIndex>::get();
 					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
@@ -529,7 +530,6 @@ decl_module!{
 			<TreeSize>::insert(&pubkey, tree_size);
 			<UserRequestsMap<T>>::insert(&pubkey, &account);
 			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
-			
 		}
 
 		//user stops requesting others pin their data
@@ -557,9 +557,9 @@ decl_module!{
 			<DatHosters<T>>::get(&pubkey)
 				.iter()
 				.for_each(|account| {
-					let mut storage : Vec<Public> =
+					let mut storage : Vec<DatIdIndex> =
 						<UsersStorage<T>>::get(account.clone());
-					match storage.binary_search(&pubkey).ok() {
+					match storage.binary_search(&index).ok() {
 						Some(index) => {storage.remove(index);},
 						None => (),
 					}
@@ -593,10 +593,10 @@ decl_module!{
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("hash must be of correct size; Qed");
 				let random_index = new_random % last_index;
-				let dat_pubkey = DatKey::get(random_index);
+				let dat_pubkey = DatKey::get(&random_index);
 				let mut current_user_dats = <UsersStorage<T>>::get(&account);
 				let mut dat_hosters = <DatHosters<T>>::get(&dat_pubkey);
-				current_user_dats.push(dat_pubkey.clone());
+				current_user_dats.push(random_index);
 				current_user_dats.sort_unstable();
 				current_user_dats.dedup();
 				dat_hosters.push(account.clone());
@@ -615,9 +615,18 @@ decl_module!{
 			}
 		} 
 
-		//TODO: unregister own intention to pin dats/ go offline.
-		 fn unregister_seeder(origin) {
-			()
+		fn unregister_seeder(origin) {
+			let account = ensure_signed(origin)?;
+			let inner_origin =
+					system::RawOrigin::Signed(account.clone());
+			for dat_id in <UsersStorage<T>>::get(&account) {
+				Self::unregister_data(inner_origin.clone().into(), dat_id);
+			}
+		}
+
+		fn punish_seeder(origin, punished: T::AccountId) {
+			ensure_root(origin)?;
+			// todo: punish seeder.
 		}
 
 		//TODO: this is probably bad and should probably go into an offchain worker.
@@ -626,16 +635,19 @@ decl_module!{
 				let user = <SelectedUsers<T>>::get(user_index);
 				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
 				let time = <SelectedChallenges<T>>::get(challenge_index).2;
+				let temporary_root = system::RawOrigin::Root;
+				let inner_origin =
+					system::RawOrigin::Signed(user.clone());
 				if (n == time) {
 					<SelectedUsers<T>>::remove(user_index);
 					<SelectedUserIndex<T>>::remove(&user);
 					<SelectedChallenges<T>>::remove(challenge_index);
 					<ChallengeMap>::remove(challenge_index);
-					//todo punish
+					Self::punish_seeder(temporary_root.into(), user.clone());
+					Self::unregister_seeder(inner_origin.into());
 					Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
-						let temporary_root = system::RawOrigin::Root;
 						Self::force_clear_challenge(temporary_root.into(), user, challenge_index);
 					}
 					//todo charge fee*
