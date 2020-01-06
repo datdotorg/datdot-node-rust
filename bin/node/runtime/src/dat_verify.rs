@@ -617,11 +617,19 @@ decl_module!{
 
 		fn unregister_seeder(origin) {
 			let account = ensure_signed(origin)?;
-			let inner_origin =
-					system::RawOrigin::Signed(account.clone());
 			for dat_id in <UsersStorage<T>>::get(&account) {
-				Self::unregister_data(inner_origin.clone().into(), dat_id);
+				let dat_key = <DatKey>::get(dat_id);
+				let mut hosters = <DatHosters<T>>::get(&dat_key);
+				hosters.sort_unstable();
+				match hosters.binary_search(&account) {
+					Ok(index) => {
+						hosters.remove(index);
+					},
+					_ => (),
+				}
+				<DatHosters<T>>::insert(dat_key, hosters);
 			}
+			<UsersStorage<T>>::remove(account);
 		}
 
 		fn punish_seeder(origin, punished: T::AccountId) {
