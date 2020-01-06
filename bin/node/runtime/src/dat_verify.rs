@@ -267,7 +267,7 @@ decl_storage! {
 		MerkleRoot get(merkle_root): map Public => (H256, Signature);
 		// users are put into an "array"
 		UsersCount: u64;
-		Users get(user): map hasher(twox_256) UserIdIndex => T::AccountId;
+		Users get(user): linked_map hasher(twox_256) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
 		UsersStorage: map T::AccountId => Vec<DatIdIndex>;
 		// each dat has a vec of users pinning it
@@ -629,6 +629,12 @@ decl_module!{
 				}
 				<DatHosters<T>>::insert(dat_key, hosters);
 			}
+			for (user_index, user_account) in <Users<T>>::enumerate(){
+				if user_account == account {
+					<Users<T>>::remove(user_index);
+				}
+			}
+			<UsersCount>::mutate(|m| *m -= 1);
 			<UsersStorage<T>>::remove(account);
 		}
 
