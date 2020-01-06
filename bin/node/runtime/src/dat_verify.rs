@@ -265,8 +265,9 @@ decl_storage! {
 		TreeSize get(tree_size): map Public => DatSize;
 		// each dat archive has a merkle root
 		MerkleRoot get(merkle_root): map Public => (H256, Signature);
+		// vec of occupied user indeces for when users are removed.
+		UsersCount: Vec<u64>;
 		// users are put into an "array"
-		UsersCount: u64;
 		Users get(user): linked_map hasher(twox_256) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
 		UsersStorage: map T::AccountId => Vec<DatIdIndex>;
@@ -296,13 +297,14 @@ decl_module!{
 		type Error = Error<T>;
 		
 		fn on_initialize(n: T::BlockNumber) {
-			let dat_vec = <DatId>::get();
+			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			let challenge_index = <ChallengeIndex>::get();
+
 			match dat_vec.last() {
 				Some(last_index) => {
 			// if no one is currently selected to give proof, select someone
-			if !<ChallengeMap>::exists(&challenge_index) && <UsersCount>::get() > 0 {
-				let nonce = <Nonce>::get();				
+			if !<ChallengeMap>::exists(&challenge_index) && <UsersCount>::exists() {
+				let nonce = <Nonce>::get();
 				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|b| Blake2Hasher::hash(b))
 				.using_encoded(|mut b| u64::decode(&mut b))
@@ -311,12 +313,16 @@ decl_module!{
 				let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
 				let future_block = 
 					n + T::BlockNumber::from(challenge_length);
-				let random_user_index = new_random % <UsersCount>::get();
+				let valid_users = <UsersCount>::get();
+				let valid_users_len = valid_users.len();
+				let selected_user = (new_random as usize % valid_users_len);
+				let random_user_index = valid_users.get(selected_user)
+					.expect("the remainder is always in bounds when % len");
 				let random_user = <Users<T>>::get(random_user_index);
 				let users_dats = <UsersStorage<T>>::get(&random_user);
 				let users_dats_len = users_dats.len();
 				let random_dat_id = users_dats.get(new_random as usize % users_dats_len)
-					.expect("user_dats is not sparse and user_dats_len is the len, so get must not fail.");
+					.expect("the remainder is always in bounds when % len");
 				let random_dat = <DatKey>::get(random_dat_id);
 				let dat_tree_len = <TreeSize>::get(&random_dat);
 				let mut random_leave = 0;
@@ -327,7 +333,7 @@ decl_module!{
 				if !<SelectedUserIndex<T>>::exists(&random_user) {
 					let user_index = <UserIndex>::get();
 					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
-					<UserIndex>::mutate(|m| *m += 1);
+					<UserIndex>::put(<UserIndex>::get() + 1);
 					y = user_index;
 				} else {
 					let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
@@ -337,8 +343,8 @@ decl_module!{
 				<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leave, future_block));
 				<SelectedUsers<T>>::insert(&y, &random_user);
 				<ChallengeMap>::insert(challenge_index, y);
-				<Nonce>::mutate(|m| *m += 1);
-				<ChallengeIndex>::mutate(|m| *m += 1);
+				<Nonce>::put(<Nonce>::get() + 1);
+				<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
 				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
 			}},
 				None => (),
@@ -606,8 +612,20 @@ decl_module!{
 				<UsersStorage<T>>::insert(&account, &current_user_dats);
 				<Nonce>::mutate(|m| *m += 1);
 				if(current_user_dats.len() == 1){
-					<Users<T>>::insert(<UsersCount>::get(), &account);
-					<UsersCount>::mutate(|m| *m += 1);
+					let mut user_index_option = <UsersCount>::get().pop();
+					let current_user_index = match user_index_option {
+						Some(x) => x,
+						None => 0,
+					};
+					match current_user_index.checked_add(1){
+						Some(i) => {
+							<Users<T>>::insert(&i, &account);
+							let mut users = <UsersCount>::get();
+							users.push(i);
+							<UsersCount>::put(users);
+						},
+						None => (),
+					}
 				}
 				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey));
 				},
@@ -632,9 +650,20 @@ decl_module!{
 			for (user_index, user_account) in <Users<T>>::enumerate(){
 				if user_account == account {
 					<Users<T>>::remove(user_index);
+					let mut user_indexes = <UsersCount>::get();
+					match user_indexes.binary_search(&user_index){
+						Ok(i) => {
+							user_indexes.remove(i);
+						},
+						_ => (),
+					}
+					if user_indexes.len() > 0 {
+						<UsersCount>::put(user_indexes);
+					} else {
+						<UsersCount>::kill();
+					}
 				}
 			}
-			<UsersCount>::mutate(|m| *m -= 1);
 			<UsersStorage<T>>::remove(account);
 		}
 
