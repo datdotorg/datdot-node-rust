@@ -286,7 +286,7 @@ decl_storage! {
 		RemovedDats: Vec<Public>;
 		SelectedUsers: map hasher(twox_256) u64 => T::AccountId;
 		// (index, challenge count)
-		SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u32);
+		SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u64);
 		Nonce: u64;
 	}
 }
@@ -668,6 +668,12 @@ decl_module!{
 		}
 
 		fn punish_seeder(origin, punished: T::AccountId) {
+			ensure_root(origin)?;
+			// todo: punish seeder.
+		}
+
+
+		fn reward_seeder(origin, rewareded: T::AccountId) {
 			ensure_root(origin)?;
 			// todo: punish seeder.
 		}
