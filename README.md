@@ -7,7 +7,7 @@ join our [telegram](https://t.me/joinchat/CgTftxXJvp6iYayqDjP7lQ) or [gitter](ht
 
 datdot code is currently located in `bin/node`
 
-currently datdot modules and runtime are "spliced" into the default substrate node cli - complete with governance and ink! smart contract modules enabled. After the runtime module has a stable api, the scaffolding will be reduced and this repo will consist of a minimal test node and FRAME pallet.
+currently datdot modules and runtime are "spliced" into the default substrate node cli - with custom governance. After the runtime module has a stable api, the scaffolding will be reduced and this repo will consist of a minimal test node and FRAME pallet.
 
 ### Building
 
