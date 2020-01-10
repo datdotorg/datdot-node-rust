@@ -210,6 +210,15 @@ pub struct RootHashPayload {
 	children: Vec<ParentHashInRoot>
 }
 
+trait HashPayload where Self: Sized + Encode {
+	fn hash(&self) -> H256 {
+		self.using_encoded(|b| Blake2Hasher::hash(b))
+	}
+}
+
+impl HashPayload for RootHashPayload {}
+impl HashPayload for ParentHashPayload {}
+impl HashPayload for ChunkHashPayload {}
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Attestation {
@@ -414,7 +423,7 @@ decl_module!{
 				chunk_length : chunk_content.len() as u64,
 				chunk_content : chunk_content
 			};
-			let chunk_hash = payload.using_encoded(|b| Blake2Hasher::hash(b));
+			let chunk_hash = payload.hash();
 			let proof_nodes : Vec<Node> = proof.nodes.clone();
 			let node_indeces : Vec<u64> = proof_nodes.clone().into_iter().map(|m| {
 					m.index
@@ -453,8 +462,7 @@ decl_module!{
 				hash_type: 2,
 				children: root_nodes
 			};
-			let root_hash = root_hash_payload
-				.using_encoded(|b| Blake2Hasher::hash(b));
+			let root_hash = root_hash_payload.hash();
 			ensure!(
 				root_hash == unsigned_root_hash,
 				Error::<T>::RootHashVerificationFailed
@@ -471,8 +479,7 @@ decl_module!{
 		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
-			let root_hash = merkle_root.1
-				.using_encoded(|b| Blake2Hasher::hash(b));
+			let root_hash = merkle_root.1.hash();
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
 			//verify the signature
 			ensure!(
@@ -503,8 +510,7 @@ decl_module!{
 			let pubkey = merkle_root.0;
 			let mut lowest_free_index : DatIdIndex = 0;
 			let mut tree_size : u64 = u64::min_value();
-			let root_hash = merkle_root.1
-				.using_encoded(|b| Blake2Hasher::hash(b));
+			let root_hash = merkle_root.1.hash(); //todo: do not calculate twice!
 			for child in merkle_root.1.children {
 				tree_size += child.total_length;
 			}
