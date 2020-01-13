@@ -445,6 +445,7 @@ impl dat_verify::Trait for Runtime {
 	type ForceOrigin = pallet_collective::EnsureMember<AccountId, CouncilCollective>;
 	type SeederMembership = DatCollective; //todo: manipulate staking via autostake here
 	type UserMembership = DatCollective;
+	type Proposal = Call;
 }
 
 impl frame_system::offchain::CreateTransaction<Runtime, UncheckedExtrinsic> for Runtime {

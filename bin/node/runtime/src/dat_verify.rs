@@ -15,6 +15,7 @@ use frame_support::{
 	decl_storage, 
 	decl_event,
 	decl_error,
+	debug::native,
 	ensure,
 	fail,
 	StorageValue,
@@ -43,6 +44,8 @@ use sp_runtime::{
 	traits::{
 		Verify,
 		CheckEqual,
+		Dispatchable,
+		StaticLookup,
 		EnsureOrigin,
 		SimpleBitOps,
 		MaybeDisplay,
@@ -64,6 +67,7 @@ pub trait Trait: system::Trait{
 	type ForceOrigin: EnsureOrigin<<Self as system::Trait>::Origin>;
 	type SeederMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
 	type UserMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
+	type Proposal: Parameter + Dispatchable<Origin=Self::Origin>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -297,6 +301,15 @@ decl_storage! {
 		// (index, challenge count)
 		SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u64);
 		Nonce: u64;
+
+		// attestor => relevant challenge
+		// attestors and attestations are ephemeral
+		Attestors: map hasher(twox_256) T::AccountId => u64;
+		// challenge => ([expected attestors], [attestations])
+		ChallengeAttestations: map hasher(twox_256) u64 =>(
+			Vec<T::AccountId>,
+			Vec<(T::AccountId, Attestation)>
+		);
 	}
 }
 
@@ -468,6 +481,13 @@ decl_module!{
 				Error::<T>::RootHashVerificationFailed
 			);
 			let temporary_root = system::RawOrigin::Root;
+			//todo: make sure we don't execute chunks multiple times
+			/* Attempt to execute the chunk as if it was an extrinsic - still broken.
+			if let Ok(proposal) = T::Proposal::decode(&mut &chunk_content[..]) {
+				let inner_origin = system::RawOrigin::Signed(challenge.0.clone().into());
+				let ok = proposal.dispatch(inner_origin.into()).is_ok();
+			}
+			*/
 			match Self::force_clear_challenge(temporary_root.into(), account, challenge_index) {
 				Ok(x) => x,
 				Err(x) => fail!(x),
@@ -475,11 +495,12 @@ decl_module!{
 			// else let the user try again until time limit
 		}
 
-		// Submit or update a piece of data that you want to have users copy
-		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature)) {
+		// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
+		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature), chunk: Option<Vec<u8>>) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
 			let root_hash = merkle_root.1.hash();
+			native::info!("Register Data Merkle Root: {:#?}", merkle_root);
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
 			//verify the signature
 			ensure!(
@@ -491,7 +512,7 @@ decl_module!{
 			);
 			let temporary_root = system::RawOrigin::Root;
 			// the rest of the logic is already in force_register_data so, just call that function.
-			match Self::force_register_data(temporary_root.into(), account, merkle_root) {
+			match Self::force_register_data(temporary_root.into(), account, merkle_root, chunk) {
 				Ok(x) => x,
 				Err(x) => fail!(x),
 			}
@@ -501,7 +522,8 @@ decl_module!{
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
-			merkle_root: (Public, RootHashPayload, Signature)
+			merkle_root: (Public, RootHashPayload, Signature),
+			chunk: Option<Vec<u8>>
 		)
 		{
 			T::ForceOrigin::try_origin(origin)
@@ -541,6 +563,18 @@ decl_module!{
 			<DatId>::put(dat_vec);
 			<TreeSize>::insert(&pubkey, tree_size);
 			<UserRequestsMap<T>>::insert(&pubkey, &account);
+			/* Attempt to execute the chunk as if it was an extrinsic - still broken.
+			match chunk {
+				Some(chunk) => {
+					if let Ok(proposal) = T::Proposal::decode(&mut &chunk[..]) {
+						let who = T::Lookup::lookup(pubkey.clone().into())?;
+						let inner_origin = system::RawOrigin::Signed(who);
+						let ok = proposal.dispatch(inner_origin.into()).is_ok();
+					} 
+				},
+				_ => (),
+			};
+			*/
 			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
 		}
 
