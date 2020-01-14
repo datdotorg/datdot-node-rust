@@ -37,7 +37,8 @@ use sp_core::{
 	ed25519,
 	Hasher,
 	Blake2Hasher, 
-	H256
+	H256,
+	convert_hash
 };
 use sp_runtime::{
 	RuntimeDebug,
@@ -200,7 +201,7 @@ pub struct ParentHashPayload {
 }
 
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Copy, RuntimeDebug)]
 pub struct ParentHashInRoot {
 	hash: H256,
 	hash_number: u64,
@@ -216,7 +217,10 @@ pub struct RootHashPayload {
 
 trait HashPayload where Self: Sized + Encode {
 	fn hash(&self) -> H256 {
-		self.using_encoded(|b| Blake2Hasher::hash(b))
+		self.using_encoded(|b|{
+			native::info!("Hash Payload: {:x?}", b);
+			Blake2Hasher::hash(b)
+		})
 	}
 }
 
@@ -481,13 +485,6 @@ decl_module!{
 				Error::<T>::RootHashVerificationFailed
 			);
 			let temporary_root = system::RawOrigin::Root;
-			//todo: make sure we don't execute chunks multiple times
-			/* Attempt to execute the chunk as if it was an extrinsic - still broken.
-			if let Ok(proposal) = T::Proposal::decode(&mut &chunk_content[..]) {
-				let inner_origin = system::RawOrigin::Signed(challenge.0.clone().into());
-				let ok = proposal.dispatch(inner_origin.into()).is_ok();
-			}
-			*/
 			match Self::force_clear_challenge(temporary_root.into(), account, challenge_index) {
 				Ok(x) => x,
 				Err(x) => fail!(x),
@@ -496,11 +493,17 @@ decl_module!{
 		}
 
 		// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
-		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature), chunk: Option<Vec<u8>>) {
+		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
-			let root_hash = merkle_root.1.hash();
-			native::info!("Register Data Merkle Root: {:#?}", merkle_root);
+			let root_hash_children = merkle_root.clone().1.children;
+			let root_hash_sanitized_payload = RootHashPayload {
+				hash_type: 2,
+				children: root_hash_children,
+			};
+			let root_hash = root_hash_sanitized_payload.hash();
+			native::info!("Register Data Merkle Root: {:x?}", merkle_root);
+			native::info!("Register Data Merkle Root Hash: {:x?}", root_hash);
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
 			//verify the signature
 			ensure!(
@@ -512,7 +515,7 @@ decl_module!{
 			);
 			let temporary_root = system::RawOrigin::Root;
 			// the rest of the logic is already in force_register_data so, just call that function.
-			match Self::force_register_data(temporary_root.into(), account, merkle_root, chunk) {
+			match Self::force_register_data(temporary_root.into(), account, merkle_root) {
 				Ok(x) => x,
 				Err(x) => fail!(x),
 			}
@@ -522,8 +525,7 @@ decl_module!{
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
-			merkle_root: (Public, RootHashPayload, Signature),
-			chunk: Option<Vec<u8>>
+			merkle_root: (Public, RootHashPayload, Signature)
 		)
 		{
 			T::ForceOrigin::try_origin(origin)
@@ -563,18 +565,6 @@ decl_module!{
 			<DatId>::put(dat_vec);
 			<TreeSize>::insert(&pubkey, tree_size);
 			<UserRequestsMap<T>>::insert(&pubkey, &account);
-			/* Attempt to execute the chunk as if it was an extrinsic - still broken.
-			match chunk {
-				Some(chunk) => {
-					if let Ok(proposal) = T::Proposal::decode(&mut &chunk[..]) {
-						let who = T::Lookup::lookup(pubkey.clone().into())?;
-						let inner_origin = system::RawOrigin::Signed(who);
-						let ok = proposal.dispatch(inner_origin.into()).is_ok();
-					} 
-				},
-				_ => (),
-			};
-			*/
 			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
 		}
 
@@ -652,7 +642,7 @@ decl_module!{
 				<UsersStorage<T>>::insert(&account, &current_user_dats);
 				<Nonce>::mutate(|m| *m += 1);
 				if(current_user_dats.len() == 1){
-					let mut user_index_option = <UsersCount>::get().pop();
+					let user_index_option = <UsersCount>::get().pop();
 					let current_user_index = match user_index_option {
 						Some(x) => x,
 						None => 0,
@@ -713,7 +703,7 @@ decl_module!{
 		}
 
 
-		fn reward_seeder(origin, rewareded: T::AccountId) {
+		fn reward_seeder(origin, rewarded: T::AccountId) {
 			ensure_root(origin)?;
 			// todo: punish seeder.
 		}
