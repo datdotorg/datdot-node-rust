@@ -545,7 +545,7 @@ decl_module!{
 		}
 
 		// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
-		fn register_data(origin, merkle_root: (Public, RootHashPayload, Signature)) {
+		fn register_data(origin, merkle_root: (Public, RootHashPayload, H512)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
 			let root_hash_children = merkle_root.clone().1.children;
@@ -554,6 +554,7 @@ decl_module!{
 				children: root_hash_children,
 			};
 			let root_hash = root_hash_sanitized_payload.hash();
+			let sig = Signature::from_h512(merkle_root.2);
 			native::info!("Register Data Merkle Root: {:x?}", merkle_root);
 			native::info!("Register Data Merkle Root Hash: {:x?}", root_hash);
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
