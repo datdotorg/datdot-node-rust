@@ -26,20 +26,24 @@ use frame_support::{
 		ChangeMembers,
 	},
 };
-use sp_std::convert::{TryInto, TryFrom};
+use sp_std::convert::{
+	TryInto, TryFrom
+};
 use frame_system::{
 	self as system,
 	ensure_signed,
 	ensure_root
 };
-use codec::{Encode, Decode};
+use codec::{Encode, Decode, Output};
 use sp_core::{
 	ed25519,
 	Hasher,
 	Blake2Hasher, 
 	H256,
-	convert_hash
+	H512,
+	convert_hash,
 };
+use core::mem;
 use sp_runtime::{
 	RuntimeDebug,
 	traits::{
@@ -224,9 +228,57 @@ trait HashPayload where Self: Sized + Encode {
 	}
 }
 
-impl HashPayload for RootHashPayload {}
-impl HashPayload for ParentHashPayload {}
-impl HashPayload for ChunkHashPayload {}
+impl HashPayload for RootHashPayload {
+	//hackish manual manipulation of the bits being hashed.
+	//made using trial-and-error. lots of memcpy. loop. kill it with fire.
+	fn hash(&self) -> H256 {
+		self.using_encoded(|dirtybits|{
+			native::info!("Root Hash Dirty Payload [{:#?}]: {:x?}", dirtybits.len(), dirtybits);
+			let mut dirtycopy = dirtybits.to_vec();
+			let mut x = 2;
+			let mut bits : Vec<u8> = Vec::new();
+			bits.push(*dirtycopy.get(0).expect(""));
+			loop{
+				let pt1 = dirtycopy.get(x+0..x+32).expect("");
+				let mut pt2: &mut [u8; 8] = &mut [0,0,0,0,0,0,0,0];
+				pt2.copy_from_slice(dirtycopy.get(x+32..x+40).expect(""));
+				pt2.reverse();
+				let mut pt3: &mut [u8;8] = &mut [0,0,0,0,0,0,0,0];
+				pt3.copy_from_slice(dirtycopy.get(x+40..x+48).expect(""));
+				pt3.reverse();
+				let mut newbits = [
+					pt1,
+					pt2,
+					pt3
+				].concat();
+				x += 48;
+				bits.extend_from_slice(&mut newbits);
+				match dirtybits.get(x) {
+					Some(_) => (),
+					None => break,
+				}
+			};
+			native::info!("Root Hash Clean Payload [{:#?}]: {:x?}", bits.len(), bits);
+			Blake2Hasher::hash(bits.as_slice())
+		})
+	}
+}
+impl HashPayload for ParentHashPayload {
+	fn hash(&self) -> H256 {
+		self.using_encoded(|b|{
+			native::info!("Parent Hash Payload: {:x?}", b);
+			Blake2Hasher::hash(b)
+		})
+	}
+}
+impl HashPayload for ChunkHashPayload {
+	fn hash(&self) -> H256 {
+		self.using_encoded(|b|{
+			native::info!("Chunk Hash Payload: {:x?}", b);
+			Blake2Hasher::hash(b)
+		})
+	}
+}
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Attestation {
@@ -507,10 +559,10 @@ decl_module!{
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
 			//verify the signature
 			ensure!(
-				&merkle_root.2.verify(
+				sig.verify(
 					root_hash.as_bytes(),
 					&pubkey
-					),
+				),
 				Error::<T>::VerificationFailed
 			);
 			let temporary_root = system::RawOrigin::Root;
@@ -525,13 +577,14 @@ decl_module!{
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
-			merkle_root: (Public, RootHashPayload, Signature)
+			merkle_root: (Public, RootHashPayload, H512)
 		)
 		{
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
 				.or_else(ensure_root)?;
 			let pubkey = merkle_root.0;
+			let sig = Signature::from_h512(merkle_root.2);
 			let mut lowest_free_index : DatIdIndex = 0;
 			let mut tree_size : u64 = u64::min_value();
 			let root_hash = merkle_root.1.hash(); //todo: do not calculate twice!
@@ -561,7 +614,7 @@ decl_module!{
 				//register new unknown dats
 				<DatKey>::insert(&lowest_free_index, &pubkey)
 			}
-			<MerkleRoot>::insert(&pubkey, (root_hash, merkle_root.2));
+			<MerkleRoot>::insert(&pubkey, (root_hash, sig));
 			<DatId>::put(dat_vec);
 			<TreeSize>::insert(&pubkey, tree_size);
 			<UserRequestsMap<T>>::insert(&pubkey, &account);
