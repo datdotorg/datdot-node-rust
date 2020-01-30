@@ -16,6 +16,7 @@ use frame_support::{
 	decl_event,
 	decl_error,
 	debug::native,
+	dispatch,
 	ensure,
 	fail,
 	StorageValue,
@@ -32,7 +33,8 @@ use sp_std::convert::{
 use frame_system::{
 	self as system,
 	ensure_signed,
-	ensure_root
+	ensure_root,
+	offchain
 };
 use codec::{Encode, Decode, Output};
 use sp_core::{
@@ -56,6 +58,12 @@ use sp_runtime::{
 		MaybeDisplay,
 		MaybeSerializeDeserialize,
 		Member
+	},
+	transaction_validity::{
+		TransactionValidity,
+		TransactionLongevity,
+		ValidTransaction,
+		InvalidTransaction
 	}
 };
 
@@ -266,8 +274,19 @@ impl HashPayload for RootHashPayload {
 impl HashPayload for ParentHashPayload {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
-			native::info!("Parent Hash Payload: {:x?}", b);
-			Blake2Hasher::hash(b)
+			native::info!("Parent Hash Payload Dirty [{:x?}]: {:x?}", b.len(), b);
+			let mut dirtycopy = b.to_vec();
+			let mut cleanbits: Vec<u8> = Vec::new();
+			let mut hash_type = dirtycopy.get(0..1).expect("");
+			let mut total_length = &mut [0,0,0,0,0,0,0,0];
+			total_length.copy_from_slice(dirtycopy.get(1..9).expect(""));
+			total_length.reverse();
+
+			native::info!("Child nodes raw: {:x?}", dirtycopy.get(9..).expect(""));
+			cleanbits.extend_from_slice(hash_type);
+			cleanbits.extend_from_slice(total_length);
+			native::info!("Parent Hash Payload [{:x?}]: {:x?}", b.len(), b);
+			Blake2Hasher::hash(cleanbits.as_slice())
 		})
 	}
 }
@@ -275,7 +294,17 @@ impl HashPayload for ChunkHashPayload {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
 			native::info!("Chunk Hash Payload: {:x?}", b);
-			Blake2Hasher::hash(b)
+			let mut dirtycopy = b.to_vec();
+			let mut cleanbits: Vec<u8> = Vec::new();
+			let mut hash_type = dirtycopy.get(0..1).expect("");
+			let mut total_length = &mut [0,0,0,0,0,0,0,0];
+			total_length.copy_from_slice(dirtycopy.get(1..9).expect(""));
+			total_length.reverse();
+
+			native::info!("Child nodes raw: {:x?}", dirtycopy.get(9..).expect(""));
+			cleanbits.extend_from_slice(hash_type);
+			cleanbits.extend_from_slice(total_length);
+			Blake2Hasher::hash(cleanbits.as_slice())
 		})
 	}
 }
@@ -326,43 +355,43 @@ decl_error! {
 decl_storage! {
 	trait Store for Module<T: Trait> as DatVerify {
 		// A vec of free indeces, with the last item usable for `len`
-		DatId get(next_id): DatIdVec;
+		pub DatId get(next_id): DatIdVec;
 		// Each dat archive has a public key
-		DatKey get(public_key): map hasher(twox_256) DatIdIndex => Public;
+		pub DatKey get(public_key): map hasher(twox_256) DatIdIndex => Public;
 		// Each dat archive has a tree size
 		// TODO: remove calls to this when expecting indeces
-		TreeSize get(tree_size): map Public => DatSize;
+		pub TreeSize get(tree_size): map hasher(blake2_256) Public => DatSize;
 		// each dat archive has a merkle root
-		MerkleRoot get(merkle_root): map Public => (H256, Signature);
+		pub MerkleRoot get(merkle_root): map hasher(blake2_256) Public => (H256, Signature);
 		// vec of occupied user indeces for when users are removed.
-		UsersCount: Vec<u64>;
+		pub UsersCount: Vec<u64>;
 		// users are put into an "array"
-		Users get(user): linked_map hasher(twox_256) UserIdIndex => T::AccountId;
+		pub Users get(user): linked_map hasher(twox_256) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
-		UsersStorage: map T::AccountId => Vec<DatIdIndex>;
+		pub UsersStorage: map hasher(blake2_256) T::AccountId => Vec<DatIdIndex>;
 		// each dat has a vec of users pinning it
-		DatHosters: map Public => Vec<T::AccountId>;
+		pub DatHosters: map hasher(blake2_256) Public => Vec<T::AccountId>;
 		// each user has a mapping and vec of dats they want seeded
-		UserRequestsMap: map Public => T::AccountId;
+		pub UserRequestsMap: map hasher(blake2_256) Public => T::AccountId;
 
 		// current check condition
-		ChallengeIndex: u64;
-		UserIndex: u64;
+		pub ChallengeIndex: u64;
+		pub UserIndex: u64;
 		// Challenge => User
-		ChallengeMap: linked_map hasher(twox_256) u64 => u64;
+		pub ChallengeMap: linked_map hasher(twox_256) u64 => u64;
 		// Dat and which index to verify
-		SelectedChallenges: map hasher(twox_256) u64 => (Public, u64, T::BlockNumber);
-		RemovedDats: Vec<Public>;
-		SelectedUsers: map hasher(twox_256) u64 => T::AccountId;
+		pub SelectedChallenges: map hasher(twox_256) u64 => (Public, u64, T::BlockNumber);
+		pub RemovedDats: Vec<Public>;
+		pub SelectedUsers: map hasher(twox_256) u64 => T::AccountId;
 		// (index, challenge count)
-		SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u64);
-		Nonce: u64;
+		pub SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u64);
+		pub Nonce: u64;
 
 		// attestor => relevant challenge
 		// attestors and attestations are ephemeral
-		Attestors: map hasher(twox_256) T::AccountId => u64;
+		pub Attestors: map hasher(twox_256) T::AccountId => u64;
 		// challenge => ([expected attestors], [attestations])
-		ChallengeAttestations: map hasher(twox_256) u64 =>(
+		pub ChallengeAttestations: map hasher(twox_256) u64 =>(
 			Vec<T::AccountId>,
 			Vec<(T::AccountId, Attestation)>
 		);
