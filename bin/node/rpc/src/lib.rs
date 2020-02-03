@@ -31,7 +31,7 @@
 
 use std::sync::Arc;
 
-use node_primitives::{Block, AccountId, Index, Balance};
+use node_primitives::{Block, BlockNumber, AccountId, Index, Balance};
 use node_runtime::UncheckedExtrinsic;
 use sp_api::ProvideRuntimeApi;
 use sp_transaction_pool::TransactionPool;

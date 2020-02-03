@@ -390,8 +390,9 @@ decl_storage! {
 		// attestor => relevant challenge
 		// attestors and attestations are ephemeral
 		pub Attestors: map hasher(twox_256) T::AccountId => u64;
-		// challenge => ([expected attestors], [attestations])
+		// challenge => ([expected attestors], [rewarded friends], [seen attestations])
 		pub ChallengeAttestations: map hasher(twox_256) u64 =>(
+			Vec<T::AccountId>,
 			Vec<T::AccountId>,
 			Vec<(T::AccountId, Attestation)>
 		);

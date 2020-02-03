@@ -35,8 +35,7 @@ use sp_runtime::{
 use sp_runtime::curve::PiecewiseLinear;
 use sp_runtime::transaction_validity::TransactionValidity;
 use sp_runtime::traits::{
-	self, BlakeTwo256, Block as BlockT, StaticLookup, SaturatedConversion,
-	OpaqueKeys,
+	self, BlakeTwo256, Block as BlockT, StaticLookup, SaturatedConversion, ConvertInto, OpaqueKeys,
 };
 use sp_version::RuntimeVersion;
 #[cfg(any(feature = "std", test))]
@@ -81,8 +80,8 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// and set impl_version to 0. If only runtime
 	// implementation changes and behavior does not, then leave spec_version as
 	// is and increment impl_version.
-	spec_version: 14,
-	impl_version: 14,
+	spec_version: 15,
+	impl_version: 0,
 	apis: RUNTIME_API_VERSIONS,
 };
 
@@ -163,20 +162,17 @@ impl pallet_indices::Trait for Runtime {
 
 parameter_types! {
 	pub const ExistentialDeposit: Balance = 1 * DOLLARS;
-	pub const TransferFee: Balance = 1 * CENTS;
 	pub const CreationFee: Balance = 1 * CENTS;
 }
 
 impl pallet_balances::Trait for Runtime {
 	type Balance = Balance;
-	type OnFreeBalanceZero = (Staking, Session);
-	type OnReapAccount = (System, Recovery);
+	type OnReapAccount = (((System, Staking), Session), Recovery);
 	type OnNewAccount = Indices;
 	type Event = Event;
 	type DustRemoval = ();
 	type TransferPayment = ();
 	type ExistentialDeposit = ExistentialDeposit;
-	type TransferFee = TransferFee;
 	type CreationFee = CreationFee;
 }
 
