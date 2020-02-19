@@ -309,17 +309,25 @@ impl HashPayload for ChunkHashPayload {
 	}
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Default, Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Attestation {
 	//todo, actually decide format
 	location: u8,
 	latency: Option<u8> //may be failure.
 }
 
+#[derive(Default, Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct ChallengeAttestations {
+	expected_attestors: Vec<u64>,
+	expected_friends: Vec<u64>,
+	seen: Vec<(u64, Attestation)>
+}
+
 type DatIdIndex = u64;
 type DatIdVec = Vec<DatIdIndex>;
 type UserIdIndex = u64; 
 type DatSize = u64;
+
 
 decl_event!(
 	pub enum Event<T> 
@@ -333,6 +341,7 @@ decl_event!(
 		ChallengeFailed(AccountId, Public),
 		NewPin(AccountId, Public),
 		Attest(AccountId, Attestation),
+		ChallengeAttempt(u64),
 	}
 );
 
@@ -391,11 +400,7 @@ decl_storage! {
 		// attestors and attestations are ephemeral
 		pub Attestors: map hasher(twox_256) T::AccountId => u64;
 		// challenge => ([expected attestors], [rewarded friends], [seen attestations])
-		pub ChallengeAttestations: map hasher(twox_256) u64 =>(
-			Vec<T::AccountId>,
-			Vec<T::AccountId>,
-			Vec<(T::AccountId, Attestation)>
-		);
+		pub ChallengeAttestors: map hasher(twox_256) u64 => ChallengeAttestations;
 	}
 }
 
@@ -487,91 +492,25 @@ decl_module!{
 		
 		
 		//test things progressively, doing quicker computations first.
-		fn submit_proof(origin, challenge_index: u64, proof: Proof, unsigned_root_hash: H256, chunk_content: Vec<u8>) {
+		//gutted temporarily to demonstrate datdot flow.
+		//we should manually verify proof from raw bits.
+		fn submit_proof(origin, challenge_index: u64, proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
-			let account_index = <ChallengeMap>::get(&challenge_index);
-			ensure!(
-				account == <SelectedUsers<T>>::get(&account_index),
-				Error::<T>::PermissionError
-			);
-			let index_proved = proof.index;
-			let challenge = <SelectedChallenges<T>>::get(&challenge_index);
-			let signature_option = proof.signature;
-			ensure!(
-				match signature_option {
-					Some(signature) => {
-						ensure!(
-							&signature.verify(
-								unsigned_root_hash.as_bytes(),
-								&challenge.0
-							),
-							Error::<T>::VerificationFailed
-						);
-						true
-					},
-					None => false
-				},
-				Error::<T>::UnsignedProof
-			);
-			ensure!(
-				index_proved == challenge.1,
-				Error::<T>::ProvesWrongChunk
-			);
-			let payload = ChunkHashPayload{
-				hash_type : 0,
-				chunk_length : chunk_content.len() as u64,
-				chunk_content : chunk_content
-			};
-			let chunk_hash = payload.hash();
-			let proof_nodes : Vec<Node> = proof.nodes.clone();
-			let node_indeces : Vec<u64> = proof_nodes.clone().into_iter().map(|m| {
-					m.index
-				}).collect();
-			let leaf_node : Option<&Node> = match node_indeces.binary_search(&index_proved) {
-				Ok(leaf_node_index) => proof_nodes.get(leaf_node_index),
-				Err(_) => None
-			};
-			match leaf_node {
-				Some(node) => ensure!(
-					chunk_hash == node.hash,
-					Error::<T>::ChunkHashVerificationFailed
-				),
-				None => ensure!(
-					false,
-					Error::<T>::ChunkHashVerificationFailed
-				)
-			}
-			let root_indeces = Node::get_orphan_indeces(index_proved);
-			let mut root_nodes : Vec<ParentHashInRoot> = Vec::new();
-			proof_nodes.iter().for_each(|check : &Node| {
-				let node_index = check.index; 
-				if root_indeces.contains(&node_index) {
-					let orphan_hash = ParentHashInRoot {
-						hash: check.hash,
-						hash_number: check.index,
-						total_length: check.size
-					};
-					root_nodes.push(orphan_hash);
-				}
-			});
-			root_nodes.sort_unstable_by(|a , b|
-				a.hash_number.cmp(&b.hash_number)
-			);
-			let root_hash_payload = RootHashPayload {
-				hash_type: 2,
-				children: root_nodes
-			};
-			let root_hash = root_hash_payload.hash();
-			ensure!(
-				root_hash == unsigned_root_hash,
-				Error::<T>::RootHashVerificationFailed
-			);
+			Self::deposit_event(RawEvent::ChallengeAttempt(challenge_index));
 			let temporary_root = system::RawOrigin::Root;
 			match Self::force_clear_challenge(temporary_root.into(), account, challenge_index) {
-				Ok(x) => x,
+				Ok(x) => {
+					let attestation_struct = ChallengeAttestations {
+						expected_attestors: Vec::new(),
+						expected_friends: Vec::new(),
+						seen: Vec::new(),
+					}; 
+					<ChallengeAttestors>::insert(challenge_index, attestation_struct); //todo populate
+					x
+				},
 				Err(x) => fail!(x),
 			}
-			// else let the user try again until time limit
+
 		}
 
 		// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
@@ -622,6 +561,7 @@ decl_module!{
 			for child in merkle_root.1.children {
 				tree_size += child.total_length;
 			}
+			native::info!("{:#?}", tree_size);
 			ensure!(
 				tree_size >= 1,
 				Error::<T>::InvalidTreeSize
@@ -741,6 +681,8 @@ decl_module!{
 						None => (),
 					}
 				}
+				native::info!("NewPin; Account: {:#?}", account);
+				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
 				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey));
 				},
 				None => (),
@@ -783,7 +725,24 @@ decl_module!{
 
 		fn punish_seeder(origin, punished: T::AccountId) {
 			ensure_root(origin)?;
+
+			let user_tuple = <SelectedUserIndex<T>>::take(&punished);
+			match user_tuple.1 {
+				1 => <SelectedUsers<T>>::remove(user_tuple.0),
+				_ => {
+						<SelectedUserIndex<T>>::try_mutate(
+							&punished,
+							|tuple|{(tuple.0, tuple.1-1)}
+						);
+						()
+					},
+			};
+			/* disabled while punishment is determined
+			let inner_origin =
+			system::RawOrigin::Signed(punished.clone());
+			Self::unregister_seeder(inner_origin.into());
 			// todo: punish seeder.
+			*/
 		}
 
 
@@ -799,15 +758,11 @@ decl_module!{
 				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
 				let time = <SelectedChallenges<T>>::get(challenge_index).2;
 				let temporary_root = system::RawOrigin::Root;
-				let inner_origin =
-					system::RawOrigin::Signed(user.clone());
-				if (n == time) {
-					<SelectedUsers<T>>::remove(user_index);
-					<SelectedUserIndex<T>>::remove(&user);
+				let attesting = <ChallengeAttestors>::exists(challenge_index);
+				if (n == time && !attesting) {
 					<SelectedChallenges<T>>::remove(challenge_index);
 					<ChallengeMap>::remove(challenge_index);
 					Self::punish_seeder(temporary_root.into(), user.clone());
-					Self::unregister_seeder(inner_origin.into());
 					Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
