@@ -19,12 +19,18 @@
 //! The [`Params`] struct is the struct that must be passed in order to initialize the networking.
 //! See the documentation of [`Params`].
 
-pub use crate::protocol::ProtocolConfig;
+pub use crate::chain::{Client, FinalityProofProvider};
+pub use crate::on_demand_layer::OnDemand;
+pub use crate::service::TransactionPool;
 pub use libp2p::{identity, core::PublicKey, wasm_ext::ExtTransport, build_multiaddr};
 
-use crate::chain::{Client, FinalityProofProvider};
-use crate::on_demand_layer::OnDemand;
-use crate::service::{ExHashT, TransactionPool};
+// Note: this re-export shouldn't be part of the public API of the crate and will be removed in
+// the future.
+#[doc(hidden)]
+pub use crate::protocol::ProtocolConfig;
+
+use crate::service::ExHashT;
+
 use bitflags::bitflags;
 use sp_consensus::{block_validation::BlockAnnounceValidator, import_queue::ImportQueue};
 use sp_runtime::traits::{Block as BlockT};
@@ -292,6 +298,7 @@ impl Default for NetworkConfiguration {
 				enable_mdns: false,
 				allow_private_ipv4: true,
 				wasm_external_transport: None,
+				use_yamux_flow_control: false,
 			},
 			max_parallel_downloads: 5,
 		}
@@ -337,8 +344,9 @@ pub enum TransportConfig {
 		enable_mdns: bool,
 
 		/// If true, allow connecting to private IPv4 addresses (as defined in
-		/// [RFC1918](https://tools.ietf.org/html/rfc1918)), unless the address has been passed in
-		/// [`NetworkConfiguration::reserved_nodes`] or [`NetworkConfiguration::boot_nodes`].
+		/// [RFC1918](https://tools.ietf.org/html/rfc1918)). Irrelevant for addresses that have
+		/// been passed in [`NetworkConfiguration::reserved_nodes`] or
+		/// [`NetworkConfiguration::boot_nodes`].
 		allow_private_ipv4: bool,
 
 		/// Optional external implementation of a libp2p transport. Used in WASM contexts where we
@@ -348,6 +356,8 @@ pub enum TransportConfig {
 		/// This parameter exists whatever the target platform is, but it is expected to be set to
 		/// `Some` only when compiling for WASM.
 		wasm_external_transport: Option<wasm_ext::ExtTransport>,
+		/// Use flow control for yamux streams if set to true.
+		use_yamux_flow_control: bool,
 	},
 
 	/// Only allow connections within the same process.

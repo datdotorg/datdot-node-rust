@@ -239,9 +239,7 @@ pub fn testnet_genesis(
 				.collect(),
 		}),
 		pallet_indices: Some(IndicesConfig {
-			ids: endowed_accounts.iter().cloned()
-				.chain(initial_authorities.iter().map(|x| x.0.clone()))
-				.collect::<Vec<_>>(),
+			indices: vec![],
 		}),
 		pallet_session: Some(SessionConfig {
 			keys: initial_authorities.iter().map(|x| {
@@ -261,13 +259,17 @@ pub fn testnet_genesis(
 		}),
 		pallet_democracy: Some(DemocracyConfig::default()),
 		pallet_collective_Instance1: Some(CouncilConfig {
-			members: endowed_accounts.iter().cloned()
-				.collect::<Vec<_>>()[..(num_endowed_accounts + 1) / 2].to_vec(),
+			members: endowed_accounts.iter()
+						.take((num_endowed_accounts + 1) / 2)
+						.cloned()
+						.collect(),
 			phantom: Default::default(),
 		}),
 		pallet_collective_Instance2: Some(TechnicalCommitteeConfig {
-			members: endowed_accounts.iter().cloned()
-				.collect::<Vec<_>>()[..(num_endowed_accounts + 1) / 2].to_vec(),
+			members: endowed_accounts.iter()
+						.take((num_endowed_accounts + 1) / 2)
+						.cloned()
+						.collect(),
 			phantom: Default::default(),
 		}),
 		pallet_collective_Instance3: Some(DatCollectiveConfig {
@@ -350,6 +352,7 @@ pub(crate) mod tests {
 	use super::*;
 	use crate::service::{new_full, new_light};
 	use sc_service_test;
+	use sp_runtime::BuildStorage;
 
 	fn local_testnet_genesis_instant_single() -> GenesisConfig {
 		testnet_genesis(
@@ -398,5 +401,20 @@ pub(crate) mod tests {
 			|config| new_full(config),
 			|config| new_light(config),
 		);
+	}
+
+	#[test]
+	fn test_create_development_chain_spec() {
+		development_config().build_storage().unwrap();
+	}
+
+	#[test]
+	fn test_create_local_testnet_chain_spec() {
+		local_testnet_config().build_storage().unwrap();
+	}
+
+	#[test]
+	fn test_staging_test_net_chain_spec() {
+		staging_testnet_config().build_storage().unwrap();
 	}
 }

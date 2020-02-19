@@ -31,7 +31,8 @@ use std::{borrow::Cow, io, pin::Pin};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use wasm_timer::Instant;
 use std::task::{Poll, Context};
 use parking_lot::Mutex;
 
@@ -45,13 +46,14 @@ use futures::{
 	task::{Spawn, FutureObj, SpawnError},
 };
 use sc_network::{
-	NetworkService, NetworkState, specialization::NetworkSpecialization,
+	NetworkService, network_state::NetworkState, specialization::NetworkSpecialization,
 	PeerId, ReportHandle,
 };
 use log::{log, warn, debug, error, Level};
 use codec::{Encode, Decode};
 use sp_runtime::generic::BlockId;
 use sp_runtime::traits::{NumberFor, Block as BlockT};
+use parity_util_mem::MallocSizeOf;
 
 pub use self::error::Error;
 pub use self::builder::{
@@ -65,12 +67,23 @@ pub use sp_transaction_pool::{TransactionPool, InPoolTransaction, error::IntoPoo
 pub use sc_transaction_pool::txpool::Options as TransactionPoolOptions;
 pub use sc_client::FinalityNotifications;
 pub use sc_rpc::Metadata as RpcMetadata;
+pub use sc_executor::NativeExecutionDispatch;
 #[doc(hidden)]
 pub use std::{ops::Deref, result::Result, sync::Arc};
 #[doc(hidden)]
-pub use sc_network::{FinalityProofProvider, OnDemand, config::BoxFinalityProofRequestBuilder};
+pub use sc_network::config::{FinalityProofProvider, OnDemand, BoxFinalityProofRequestBuilder};
 
 const DEFAULT_PROTOCOL_ID: &str = "sup";
+
+/// A type that implements `MallocSizeOf` on native but not wasm.
+#[cfg(not(target_os = "unknown"))]
+pub trait MallocSizeOfWasm: MallocSizeOf {}
+#[cfg(target_os = "unknown")]
+pub trait MallocSizeOfWasm {}
+#[cfg(not(target_os = "unknown"))]
+impl<T: MallocSizeOf> MallocSizeOfWasm for T {}
+#[cfg(target_os = "unknown")]
+impl<T> MallocSizeOfWasm for T {}
 
 /// Substrate service.
 pub struct Service<TBl, TCl, TSc, TNetStatus, TNet, TTxPool, TOc> {
@@ -96,7 +109,7 @@ pub struct Service<TBl, TCl, TSc, TNetStatus, TNet, TTxPool, TOc> {
 	/// Receiver for futures that must be spawned as background tasks.
 	to_spawn_rx: mpsc::UnboundedReceiver<(Pin<Box<dyn Future<Output = ()> + Send>>, Cow<'static, str>)>,
 	/// How to spawn background tasks.
-	task_executor: Box<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + Send>,
+	task_executor: Arc<dyn Fn(Pin<Box<dyn Future<Output = ()> + Send>>) + Send + Sync>,
 	rpc_handlers: sc_rpc_server::RpcHandler<sc_rpc::Metadata>,
 	_rpc: Box<dyn std::any::Any + Send + Sync>,
 	_telemetry: Option<sc_telemetry::Telemetry>,
@@ -162,7 +175,7 @@ pub trait AbstractService: 'static + Future<Output = Result<(), Error>> +
 	/// Chain selection algorithm.
 	type SelectChain: sp_consensus::SelectChain<Self::Block>;
 	/// Transaction pool.
-	type TransactionPool: TransactionPool<Block = Self::Block>;
+	type TransactionPool: TransactionPool<Block = Self::Block> + MallocSizeOfWasm;
 	/// Network specialization.
 	type NetworkSpecialization: NetworkSpecialization<Self::Block>;
 
@@ -226,7 +239,7 @@ where
 	TExec: 'static + sc_client::CallExecutor<TBl> + Send + Sync + Clone,
 	TRtApi: 'static + Send + Sync,
 	TSc: sp_consensus::SelectChain<TBl> + 'static + Clone + Send + Unpin,
-	TExPool: 'static + TransactionPool<Block = TBl>,
+	TExPool: 'static + TransactionPool<Block = TBl> + MallocSizeOfWasm,
 	TOc: 'static + Send + Sync,
 	TNetSpec: NetworkSpecialization<TBl>,
 {
@@ -612,7 +625,7 @@ where
 	E: IntoPoolError + From<sp_transaction_pool::error::Error>,
 {
 	pool.ready()
-		.filter(|t| t.is_propagateable())
+		.filter(|t| t.is_propagable())
 		.map(|t| {
 			let hash = t.hash().clone();
 			let ex: B::Extrinsic = t.data().clone();
@@ -621,10 +634,10 @@ where
 		.collect()
 }
 
-impl<B, H, C, Pool, E> sc_network::TransactionPool<H, B> for
+impl<B, H, C, Pool, E> sc_network::config::TransactionPool<H, B> for
 	TransactionPoolAdapter<C, Pool>
 where
-	C: sc_network::ClientHandle<B> + Send + Sync,
+	C: sc_network::config::Client<B> + Send + Sync,
 	Pool: 'static + TransactionPool<Block=B, Hash=H, Error=E>,
 	B: BlockT,
 	H: std::hash::Hash + Eq + sp_runtime::traits::Member + sp_runtime::traits::MaybeSerialize,
@@ -692,6 +705,7 @@ mod tests {
 	use futures::executor::block_on;
 	use sp_consensus::SelectChain;
 	use sp_runtime::traits::BlindCheckable;
+	use sp_runtime::generic::CheckSignature;
 	use substrate_test_runtime_client::{prelude::*, runtime::{Extrinsic, Transfer}};
 	use sc_transaction_pool::{BasicPool, FullChainApi};
 
@@ -703,7 +717,7 @@ mod tests {
 		let pool = Arc::new(BasicPool::new(
 			Default::default(),
 			Arc::new(FullChainApi::new(client.clone())),
-		));
+		).0);
 		let best = longest_chain.best_chain().unwrap();
 		let transaction = Transfer {
 			amount: 5,
@@ -720,7 +734,7 @@ mod tests {
 
 		// then
 		assert_eq!(transactions.len(), 1);
-		assert!(transactions[0].1.clone().check().is_ok());
+		assert!(transactions[0].1.clone().check(CheckSignature::Yes).is_ok());
 		// this should not panic
 		let _ = transactions[0].1.transfer();
 	}
