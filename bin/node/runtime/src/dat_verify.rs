@@ -416,7 +416,8 @@ decl_module!{
 			match dat_vec.last() {
 				Some(last_index) => {
 			// if no one is currently selected to give proof, select someone
-			if !<ChallengeMap>::exists(&challenge_index) && <UsersCount>::exists() {
+			if !<ChallengeMap>::try_get(&challenge_index).is_err() &&
+				<UsersCount>::try_get().is_err() {
 				let nonce = <Nonce>::get();
 				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|b| Blake2Hasher::hash(b))
@@ -443,15 +444,18 @@ decl_module!{
 					random_leave = new_random % dat_tree_len;
 				} 
 				let y : u64;
-				if !<SelectedUserIndex<T>>::exists(&random_user) {
-					let user_index = <UserIndex>::get();
-					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
-					<UserIndex>::put(<UserIndex>::get() + 1);
-					y = user_index;
-				} else {
-					let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
-					<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
-					y = user_index;
+				match <SelectedUserIndex<T>>::try_get(&random_user) {
+					Ok(_) => {
+						let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
+						<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
+						y = user_index;
+					},
+					Err => {	
+						let user_index = <UserIndex>::get();
+						<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
+						<UserIndex>::put(<UserIndex>::get() + 1);
+						y = user_index;
+					},
 				}
 				<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leave, future_block));
 				<SelectedUsers<T>>::insert(&y, &random_user);
@@ -567,23 +571,26 @@ decl_module!{
 				Error::<T>::InvalidTreeSize
 			);
 			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
-			if !<MerkleRoot>::exists(&pubkey){
-				match dat_vec.first() {
-					Some(_) => {
-						dat_vec.sort_unstable();
-						lowest_free_index = dat_vec.remove(0);
-						dat_vec.push(lowest_free_index + 1);
-						dat_vec.sort_unstable();
-						dat_vec.dedup();
-					},
-					None => {
-						//add an element if the vec is empty
-						dat_vec.push(1);
-						lowest_free_index = 0;
-					},
-				}
-				//register new unknown dats
-				<DatKey>::insert(&lowest_free_index, &pubkey)
+			match <MerkleRoot>::try_get(&pubkey){
+				Ok(val) => {
+						match dat_vec.first() {
+						Some(_) => {
+							dat_vec.sort_unstable();
+							lowest_free_index = dat_vec.remove(0);
+							dat_vec.push(lowest_free_index + 1);
+							dat_vec.sort_unstable();
+							dat_vec.dedup();
+						},
+						None => {
+							//add an element if the vec is empty
+							dat_vec.push(1);
+							lowest_free_index = 0;
+						},
+					}
+					//register new unknown dats
+					<DatKey>::insert(&lowest_free_index, &pubkey)
+				},
+				Err => (),
 			}
 			<MerkleRoot>::insert(&pubkey, (root_hash, sig));
 			<DatId>::put(dat_vec);
@@ -631,9 +638,9 @@ decl_module!{
 			<TreeSize>::remove(&pubkey);
 			<MerkleRoot>::remove(&pubkey);
 			//if the dat being unregistered is currently part of the challenge
-			let mut tmp : Vec<Public> = Vec::new();
-			if <RemovedDats>::exists() {
-				tmp = <RemovedDats>::get();	
+			let mut tmp = match <RemovedDats>::try_get() {
+				Ok(expr) => expr,
+				None => Vec::new(),
 			}
 			tmp.push(pubkey);
 			<RemovedDats>::put(tmp);
@@ -730,10 +737,11 @@ decl_module!{
 			match user_tuple.1 {
 				1 => <SelectedUsers<T>>::remove(user_tuple.0),
 				_ => {
-						<SelectedUserIndex<T>>::try_mutate(
+						<SelectedUserIndex<T>>::mutate(
 							&punished,
-							|tuple|{(tuple.0, tuple.1-1)}
-						);
+							|mut tuple|{
+								tuple = (tuple.0, tuple.1-1)
+							});
 						()
 					},
 			};
@@ -758,8 +766,8 @@ decl_module!{
 				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
 				let time = <SelectedChallenges<T>>::get(challenge_index).2;
 				let temporary_root = system::RawOrigin::Root;
-				let attesting = <ChallengeAttestors>::exists(challenge_index);
-				if (n == time && !attesting) {
+				let attesting = <ChallengeAttestors>::try_get(challenge_index);
+				if (n == time && attesting.is_err()) {
 					<SelectedChallenges<T>>::remove(challenge_index);
 					<ChallengeMap>::remove(challenge_index);
 					Self::punish_seeder(temporary_root.into(), user.clone());
