@@ -48,6 +48,7 @@ use sp_core::{
 use core::mem;
 use sp_runtime::{
 	RuntimeDebug,
+	DispatchError,
 	traits::{
 		Verify,
 		CheckEqual,
@@ -341,7 +342,7 @@ decl_event!(
 		ChallengeFailed(AccountId, Public),
 		NewPin(AccountId, Public),
 		Attest(AccountId, Attestation),
-		ChallengeAttempt(u64),
+		AttestPhase(bool, u64),
 	}
 );
 
@@ -388,7 +389,7 @@ decl_storage! {
 		pub UserIndex: u64;
 		// Challenge => User
 		pub ChallengeMap: linked_map hasher(twox_256) u64 => u64;
-		// Dat and which index to verify
+		// Dat and which index to verify, and deadline
 		pub SelectedChallenges: map hasher(twox_256) u64 => (Public, u64, T::BlockNumber);
 		pub RemovedDats: Vec<Public>;
 		pub SelectedUsers: map hasher(twox_256) u64 => T::AccountId;
@@ -416,8 +417,7 @@ decl_module!{
 			match dat_vec.last() {
 				Some(last_index) => {
 			// if no one is currently selected to give proof, select someone
-			if !<ChallengeMap>::try_get(&challenge_index).is_err() &&
-				<UsersCount>::try_get().is_err() {
+			if !<ChallengeMap>::contains_key(&challenge_index) {
 				let nonce = <Nonce>::get();
 				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|b| Blake2Hasher::hash(b))
@@ -444,18 +444,15 @@ decl_module!{
 					random_leave = new_random % dat_tree_len;
 				} 
 				let y : u64;
-				match <SelectedUserIndex<T>>::try_get(&random_user) {
-					Ok(_) => {
-						let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
-						<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
-						y = user_index;
-					},
-					Err => {	
-						let user_index = <UserIndex>::get();
-						<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
-						<UserIndex>::put(<UserIndex>::get() + 1);
-						y = user_index;
-					},
+				if <SelectedUserIndex<T>>::contains_key(&random_user) {
+					let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
+					<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
+					y = user_index;
+				} else {	
+					let user_index = <UserIndex>::get();
+					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
+					<UserIndex>::put(<UserIndex>::get() + 1);
+					y = user_index;
 				}
 				<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leave, future_block));
 				<SelectedUsers<T>>::insert(&y, &random_user);
@@ -500,16 +497,11 @@ decl_module!{
 		//we should manually verify proof from raw bits.
 		fn submit_proof(origin, challenge_index: u64, proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
-			Self::deposit_event(RawEvent::ChallengeAttempt(challenge_index));
 			let temporary_root = system::RawOrigin::Root;
 			match Self::force_clear_challenge(temporary_root.into(), account, challenge_index) {
 				Ok(x) => {
-					let attestation_struct = ChallengeAttestations {
-						expected_attestors: Vec::new(),
-						expected_friends: Vec::new(),
-						seen: Vec::new(),
-					}; 
-					<ChallengeAttestors>::insert(challenge_index, attestation_struct); //todo populate
+					<ChallengeAttestors>::insert(challenge_index, Self::get_attestors_for(challenge_index)); //todo populate
+					Self::deposit_event(RawEvent::AttestPhase(true, challenge_index));
 					x
 				},
 				Err(x) => fail!(x),
@@ -571,8 +563,8 @@ decl_module!{
 				Error::<T>::InvalidTreeSize
 			);
 			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
-			match <MerkleRoot>::try_get(&pubkey){
-				Ok(val) => {
+			match <MerkleRoot>::contains_key(&pubkey){
+				true => {
 						match dat_vec.first() {
 						Some(_) => {
 							dat_vec.sort_unstable();
@@ -590,7 +582,7 @@ decl_module!{
 					//register new unknown dats
 					<DatKey>::insert(&lowest_free_index, &pubkey)
 				},
-				Err => (),
+				false => (),
 			}
 			<MerkleRoot>::insert(&pubkey, (root_hash, sig));
 			<DatId>::put(dat_vec);
@@ -640,8 +632,8 @@ decl_module!{
 			//if the dat being unregistered is currently part of the challenge
 			let mut tmp = match <RemovedDats>::try_get() {
 				Ok(expr) => expr,
-				None => Vec::new(),
-			}
+				Err(_) => Vec::new(),
+			};
 			tmp.push(pubkey);
 			<RemovedDats>::put(tmp);
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
@@ -739,8 +731,10 @@ decl_module!{
 				_ => {
 						<SelectedUserIndex<T>>::mutate(
 							&punished,
-							|mut tuple|{
-								tuple = (tuple.0, tuple.1-1)
+							|tuple|{
+								let el1 = tuple.0.clone();
+								let el2 = tuple.1-1;
+								*tuple = (el1, el2);
 							});
 						()
 					},
@@ -766,12 +760,17 @@ decl_module!{
 				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
 				let time = <SelectedChallenges<T>>::get(challenge_index).2;
 				let temporary_root = system::RawOrigin::Root;
-				let attesting = <ChallengeAttestors>::try_get(challenge_index);
-				if (n == time && attesting.is_err()) {
-					<SelectedChallenges<T>>::remove(challenge_index);
-					<ChallengeMap>::remove(challenge_index);
-					Self::punish_seeder(temporary_root.into(), user.clone());
-					Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
+				let attesting = <ChallengeAttestors>::contains_key(challenge_index);
+				if (n == time) {
+					if attesting {
+						<SelectedChallenges<T>>::remove(challenge_index);
+						<ChallengeMap>::remove(challenge_index);
+						Self::punish_seeder(temporary_root.into(), user.clone());
+						Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
+					} else {
+						<ChallengeAttestors>::insert(challenge_index, Self::get_attestors_for(challenge_index));
+						Self::deposit_event(RawEvent::AttestPhase(false, challenge_index));
+					}
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
 						Self::force_clear_challenge(temporary_root.into(), user, challenge_index);
@@ -783,6 +782,17 @@ decl_module!{
 		}
 
 		//end Module
+	}
+}
+
+impl<T: Trait> Module<T> {
+	fn get_attestors_for(challenge_index: u64) -> ChallengeAttestations{
+		//TODO: populate
+		ChallengeAttestations {
+			expected_attestors: Vec::new(),
+			expected_friends: Vec::new(),
+			seen: Vec::new(),
+		}
 	}
 }
 

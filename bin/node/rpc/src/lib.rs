@@ -115,9 +115,6 @@ pub fn create_full<C, P, M, SC>(
 	// more context: https://github.com/paritytech/substrate/pull/3480
 	// These RPCs should use an asynchronous caller instead.
 	io.extend_with(
-		ContractsApi::to_delegate(Contracts::new(client.clone()))
-	);
-	io.extend_with(
 		TransactionPaymentApi::to_delegate(TransactionPayment::new(client.clone()))
 	);
 	io.extend_with(
