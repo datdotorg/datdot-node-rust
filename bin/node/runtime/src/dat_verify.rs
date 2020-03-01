@@ -413,11 +413,13 @@ decl_module!{
 		fn on_initialize(n: T::BlockNumber) {
 			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			let challenge_index = <ChallengeIndex>::get();
+			let valid_users = <UsersCount>::get();
+			let valid_users_len = valid_users.len();
 
 			match dat_vec.last() {
 				Some(last_index) => {
-			// if no one is currently selected to give proof, select someone
-			if !<ChallengeMap>::contains_key(&challenge_index) {
+			// if no one is currently selected to give proof, select someone if someone exists to select
+			if !<ChallengeMap>::contains_key(&challenge_index) && valid_users_len > 0 {
 				let nonce = <Nonce>::get();
 				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|b| Blake2Hasher::hash(b))
@@ -427,8 +429,7 @@ decl_module!{
 				let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
 				let future_block = 
 					n + T::BlockNumber::from(challenge_length);
-				let valid_users = <UsersCount>::get();
-				let valid_users_len = valid_users.len();
+				
 				let selected_user = (new_random as usize % valid_users_len);
 				let random_user_index = valid_users.get(selected_user)
 					.expect("the remainder is always in bounds when % len");
@@ -564,8 +565,9 @@ decl_module!{
 			);
 			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			match <MerkleRoot>::contains_key(&pubkey){
-				true => {
-						match dat_vec.first() {
+				true => (),
+				false => {
+					match dat_vec.first() {
 						Some(_) => {
 							dat_vec.sort_unstable();
 							lowest_free_index = dat_vec.remove(0);
@@ -576,13 +578,12 @@ decl_module!{
 						None => {
 							//add an element if the vec is empty
 							dat_vec.push(1);
-							lowest_free_index = 0;
+							lowest_free_index = 1;
 						},
 					}
 					//register new unknown dats
 					<DatKey>::insert(&lowest_free_index, &pubkey)
 				},
-				false => (),
 			}
 			<MerkleRoot>::insert(&pubkey, (root_hash, sig));
 			<DatId>::put(dat_vec);
@@ -644,7 +645,9 @@ decl_module!{
 			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
 			let dat_vec = <DatId>::get();
-			match dat_vec.last() {
+			let last = dat_vec.last();
+			native::info!("Last Dat Index: {:#?}", last);
+			match last {
 				Some(last_index) => {
 				let nonce = <Nonce>::get();
 				let new_random = (T::Randomness::random(b"dat_verify_register"), &nonce, &account)
@@ -684,7 +687,9 @@ decl_module!{
 				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
 				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey));
 				},
-				None => (),
+				None => {
+					
+				},
 			}
 		} 
 
