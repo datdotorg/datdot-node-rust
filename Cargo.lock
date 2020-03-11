@@ -3571,6 +3571,7 @@ dependencies = [
  "pallet-utility",
  "pallet-vesting",
  "parity-scale-codec",
+ "rand_chacha 0.2.1",
  "rustc-hex",
  "serde",
  "sp-api",

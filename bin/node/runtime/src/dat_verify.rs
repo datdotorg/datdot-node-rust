@@ -23,6 +23,7 @@ use frame_support::{
 	StorageMap,
 	Parameter,
 	traits::{
+		Get,
 		Randomness,
 		ChangeMembers,
 	},
@@ -57,6 +58,7 @@ use sp_runtime::{
 		EnsureOrigin,
 		SimpleBitOps,
 		MaybeDisplay,
+		TrailingZeroInput,
 		MaybeSerializeDeserialize,
 		Member
 	},
@@ -67,6 +69,7 @@ use sp_runtime::{
 		InvalidTransaction
 	}
 };
+use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 
 pub type Public = ed25519::Public;
 pub type Signature = ed25519::Signature;
@@ -82,6 +85,7 @@ pub trait Trait: system::Trait{
 	type SeederMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
 	type UserMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
 	type Proposal: Parameter + Dispatchable<Origin=Self::Origin>;
+	type AttestorsPerChallenge: Get<u32>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -310,7 +314,7 @@ impl HashPayload for ChunkHashPayload {
 	}
 }
 
-#[derive(Default, Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Default, Decode, PartialEq, Eq, Encode, Clone, Copy, RuntimeDebug)]
 pub struct Attestation {
 	//todo, actually decide format
 	location: u8,
@@ -397,9 +401,12 @@ decl_storage! {
 		pub SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u64);
 		pub Nonce: u64;
 
-		// attestor => relevant challenge
-		// attestors and attestations are ephemeral
-		pub Attestors: map hasher(twox_256) T::AccountId => u64;
+		// all attestors
+		pub Attestors get(atts): linked_map hasher(twox_256) UserIdIndex => T::AccountId;
+		// vec of occupied attestor indeces for when attestors are removed.
+		pub AttestorsCount: Vec<u64>;
+		// non-friend, randomly-selectable attestors.
+		pub ActiveAttestors: Vec<u64>;
 		// challenge => ([expected attestors], [rewarded friends], [seen attestations])
 		pub ChallengeAttestors: map hasher(twox_256) u64 => ChallengeAttestations;
 	}
@@ -466,12 +473,31 @@ decl_module!{
 			}
 		}
 
-		//TODO: submit attestation that a peer is online and behaving correctly on the dat network
-		fn submit_attestation(origin, attestation: Attestation) {
+		fn submit_attestation(origin, challenge_index: u64, attestation: Attestation) {
 			let attestor = ensure_signed(origin)?;
-			// TODO: verify you have been requested an attestation
-			// TODO: remove challenge iff threshold is met
-			Self::deposit_event(RawEvent::Attest(attestor, attestation));
+			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
+			let mut attestor_index;
+			for (user_index, user_account) in <Attestors<T>>::enumerate(){
+				if user_account == attestor {
+					attestor_index = user_index;
+				match challenge.expected_attestors.binary_search(&attestor_index) {
+					Ok(index) => {
+						challenge.expected_attestors.remove(index);
+						challenge.seen.push((attestor_index, attestation));
+					},
+					Err(_) => (),
+				}
+				match challenge.expected_friends.binary_search(&attestor_index) {
+					Ok(index) => {
+						challenge.expected_friends.remove(index);
+						challenge.seen.push((attestor_index, attestation));
+					},
+					Err(_) => (),
+				}
+				Self::deposit_event(RawEvent::Attest(attestor, attestation));
+				break;
+				}
+			}
 		}
 
 		
@@ -640,6 +666,67 @@ decl_module!{
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
 		}
 
+		fn register_attestor(origin){
+			let account = ensure_signed(origin)?;
+			let mut att_count = <AttestorsCount>::get();
+			let last = att_count.last();
+			match last {
+				Some(last_index) => {
+					let user_index_option = att_count.pop();
+					let current_user_index = match user_index_option {
+						Some(x) => x,
+						None => 0,
+					};
+					match current_user_index.checked_add(1){
+						Some(i) => {
+							<Attestors<T>>::insert(&i, &account);
+							let mut atts = <AttestorsCount>::get();
+							atts.push(i);
+							<AttestorsCount>::put(atts);
+							<ActiveAttestors>::mutate(|mut att_vec|{
+								att_vec.push(i);
+								att_vec.sort_unstable();
+								att_vec.dedup();
+							});
+						},
+						None => (),
+					}
+				},
+				None => (),
+			}
+		}
+
+		fn unregister_attestor(origin){
+			let account = ensure_signed(origin)?;
+			for (user_index, user_account) in <Attestors<T>>::enumerate(){
+				if user_account == account {
+					<Attestors<T>>::remove(user_index);
+					let mut user_indexes = <AttestorsCount>::get();
+					match user_indexes.binary_search(&user_index){
+						Ok(i) => {
+							user_indexes.remove(i);
+							<ActiveAttestors>::mutate(|mut att_vec|{
+								match att_vec.binary_search(&user_index){
+									Ok(e) => {
+										att_vec.remove(e);
+									},
+									_ => (),
+								}
+								att_vec.sort_unstable();
+								att_vec.dedup();
+							});
+						},
+						_ => (),
+					}
+					if user_indexes.len() > 0 {
+						<AttestorsCount>::put(user_indexes);
+					} else {
+						<AttestorsCount>::kill();
+					}
+				}
+			}
+		}
+
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
 		fn register_seeder(origin) {
 			//TODO: bias towards unseeded dats and high incentive
@@ -782,6 +869,7 @@ decl_module!{
 					}
 					//todo charge fee*
 				}
+				//todo - iterate through attestations
 			}
 			<RemovedDats>::kill();
 		}
@@ -791,14 +879,52 @@ decl_module!{
 }
 
 impl<T: Trait> Module<T> {
+
 	fn get_attestors_for(challenge_index: u64) -> ChallengeAttestations{
-		//TODO: populate
-		ChallengeAttestations {
-			expected_attestors: Vec::new(),
-			expected_friends: Vec::new(),
-			seen: Vec::new(),
+		let attestors = <ChallengeAttestors>::get(challenge_index);
+		if attestors.expected_attestors.len() > 0{
+			return attestors
+		} else {
+			return ChallengeAttestations {
+				expected_attestors: Self::get_random_attestors(),
+				expected_friends: attestors.expected_friends,
+				seen: attestors.seen,
+			}
 		}
 	}
+
+	//borrowing from society pallet ---
+	fn pick_usize<'a, R: RngCore>(rng: &mut R, max: usize) -> usize {
+
+		(rng.next_u32() % (max as u32 + 1)) as usize
+	}
+	
+	/// Pick an item at pseudo-random from the slice, given the `rng`. `None` iff the slice is empty.
+	fn pick_item<'a, R: RngCore, E>(rng: &mut R, items: &'a [E]) -> Option<&'a E> {
+		if items.is_empty() {
+			None
+		} else {
+			Some(&items[Self::pick_usize(rng, items.len() - 1)])
+		}
+	}
+	// ---
+
+	fn get_random_attestors() -> Vec<u64> {
+		let nonce = <Nonce>::get();
+		let mut random_select: Vec<u64> = Vec::new();
+		let seed = (T::Randomness::random(b"dat_random_attestors"), nonce)
+			.using_encoded(|b| Blake2Hasher::hash(b))
+			.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
+			.expect("input is padded with zeroes; qed");
+		let members = <ActiveAttestors>::get();
+		let mut rng = ChaChaRng::from_seed(seed);
+		let pick_attestor = |_| Self::pick_item(&mut rng, &members[..]).expect("exited if members empty; qed");
+		for attestor in (0..T::AttestorsPerChallenge::get()).map(pick_attestor){
+			random_select.push(*attestor);
+		}
+		random_select
+	}
+
 }
 
 

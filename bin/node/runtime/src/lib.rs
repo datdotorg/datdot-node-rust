@@ -442,6 +442,10 @@ impl pallet_identity::Trait for Runtime {
 	type RegistrarOrigin = pallet_collective::EnsureMember<AccountId, CouncilCollective>;
 }
 
+parameter_types! {
+	pub const AttestorsPerChallenge: u32 = 3;
+}
+
 impl dat_verify::Trait for Runtime {
 	type Event = Event;
 	type Randomness = RandomnessCollectiveFlip;
@@ -450,6 +454,7 @@ impl dat_verify::Trait for Runtime {
 	type SeederMembership = DatCollective; //todo: manipulate staking via autostake here
 	type UserMembership = DatCollective;
 	type Proposal = Call;
+	type AttestorsPerChallenge = AttestorsPerChallenge;
 }
 
 impl frame_system::offchain::CreateTransaction<Runtime, UncheckedExtrinsic> for Runtime {
