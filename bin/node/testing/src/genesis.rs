@@ -20,7 +20,7 @@ use crate::keyring::*;
 use sp_keyring::{Ed25519Keyring, Sr25519Keyring};
 use node_runtime::{
 	GenesisConfig, BalancesConfig, SessionConfig, StakingConfig, SystemConfig,
-	GrandpaConfig, IndicesConfig, ContractsConfig, SocietyConfig, WASM_BINARY,
+	GrandpaConfig, IndicesConfig, WASM_BINARY,
 	AccountId,
 };
 use node_runtime::constants::currency::*;
@@ -69,22 +69,21 @@ pub fn config_endowed(
 		}),
 		pallet_session: Some(SessionConfig {
 			keys: vec![
-				(alice(), to_session_keys(
+				(dave(), alice(), to_session_keys(
 					&Ed25519Keyring::Alice,
 					&Sr25519Keyring::Alice,
 				)),
-				(bob(), to_session_keys(
+				(eve(), bob(), to_session_keys(
 					&Ed25519Keyring::Bob,
 					&Sr25519Keyring::Bob,
 				)),
-				(charlie(), to_session_keys(
+				(ferdie(), charlie(), to_session_keys(
 					&Ed25519Keyring::Charlie,
 					&Sr25519Keyring::Charlie,
 				)),
 			]
 		}),
 		pallet_staking: Some(StakingConfig {
-			current_era: 0,
 			stakers: vec![
 				(dave(), alice(), 111 * DOLLARS, pallet_staking::StakerStatus::Validator),
 				(eve(), bob(), 100 * DOLLARS, pallet_staking::StakerStatus::Validator),
@@ -95,10 +94,6 @@ pub fn config_endowed(
 			slash_reward_fraction: Perbill::from_percent(10),
 			invulnerables: vec![alice(), bob(), charlie()],
 			.. Default::default()
-		}),
-		pallet_contracts: Some(ContractsConfig {
-			current_schedule: Default::default(),
-			gas_price: 1 * MILLICENTS,
 		}),
 		pallet_babe: Some(Default::default()),
 		pallet_grandpa: Some(GrandpaConfig {
@@ -112,11 +107,5 @@ pub fn config_endowed(
 		pallet_membership_Instance1: Some(Default::default()),
 		pallet_sudo: Some(Default::default()),
 		pallet_treasury: Some(Default::default()),
-		pallet_society: Some(SocietyConfig {
-			members: vec![alice(), bob()],
-			pot: 0,
-			max_members: 999,
-		}),
-		pallet_vesting: Some(Default::default()),
 	}
 }

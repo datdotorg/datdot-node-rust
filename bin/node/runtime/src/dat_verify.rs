@@ -19,9 +19,12 @@ use frame_support::{
 	dispatch,
 	ensure,
 	fail,
-	StorageValue,
-	StorageMap,
 	Parameter,
+	storage::{
+		StorageMap,
+		StorageValue,
+		IterableStorageMap
+	},
 	traits::{
 		Get,
 		Randomness,
@@ -371,44 +374,44 @@ decl_storage! {
 		// A vec of free indeces, with the last item usable for `len`
 		pub DatId get(next_id): DatIdVec;
 		// Each dat archive has a public key
-		pub DatKey get(public_key): map hasher(twox_256) DatIdIndex => Public;
+		pub DatKey get(public_key): map hasher(natural) DatIdIndex => Public;
 		// Each dat archive has a tree size
 		// TODO: remove calls to this when expecting indeces
-		pub TreeSize get(tree_size): map hasher(blake2_256) Public => DatSize;
+		pub TreeSize get(tree_size): map hasher(prehashed) Public => DatSize;
 		// each dat archive has a merkle root
-		pub MerkleRoot get(merkle_root): map hasher(blake2_256) Public => (H256, Signature);
+		pub MerkleRoot get(merkle_root): map hasher(prehashed) Public => (H256, Signature);
 		// vec of occupied user indeces for when users are removed.
 		pub UsersCount: Vec<u64>;
 		// users are put into an "array"
-		pub Users get(user): linked_map hasher(twox_256) UserIdIndex => T::AccountId;
+		pub Users get(user): map hasher(natural) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
-		pub UsersStorage: map hasher(blake2_256) T::AccountId => Vec<DatIdIndex>;
+		pub UsersStorage: map hasher(natural) T::AccountId => Vec<DatIdIndex>;
 		// each dat has a vec of users pinning it
-		pub DatHosters: map hasher(blake2_256) Public => Vec<T::AccountId>;
+		pub DatHosters: map hasher(prehashed) Public => Vec<T::AccountId>;
 		// each user has a mapping and vec of dats they want seeded
-		pub UserRequestsMap: map hasher(blake2_256) Public => T::AccountId;
+		pub UserRequestsMap: map hasher(prehashed) Public => T::AccountId;
 
 		// current check condition
 		pub ChallengeIndex: u64;
 		pub UserIndex: u64;
 		// Challenge => User
-		pub ChallengeMap: linked_map hasher(twox_256) u64 => u64;
+		pub ChallengeMap: map hasher(natural) u64 => u64;
 		// Dat and which index to verify, and deadline
-		pub SelectedChallenges: map hasher(twox_256) u64 => (Public, u64, T::BlockNumber);
+		pub SelectedChallenges: map hasher(natural) u64 => (Public, u64, T::BlockNumber);
 		pub RemovedDats: Vec<Public>;
-		pub SelectedUsers: map hasher(twox_256) u64 => T::AccountId;
+		pub SelectedUsers: map hasher(natural) u64 => T::AccountId;
 		// (index, challenge count)
-		pub SelectedUserIndex: map hasher(twox_256) T::AccountId => (u64, u64);
+		pub SelectedUserIndex: map hasher(natural) T::AccountId => (u64, u64);
 		pub Nonce: u64;
 
 		// all attestors
-		pub Attestors get(atts): linked_map hasher(twox_256) UserIdIndex => T::AccountId;
+		pub Attestors get(atts): map hasher(natural) UserIdIndex => T::AccountId;
 		// vec of occupied attestor indeces for when attestors are removed.
 		pub AttestorsCount: Vec<u64>;
 		// non-friend, randomly-selectable attestors.
 		pub ActiveAttestors: Vec<u64>;
 		// challenge => ([expected attestors], [rewarded friends], [seen attestations])
-		pub ChallengeAttestors: map hasher(twox_256) u64 => ChallengeAttestations;
+		pub ChallengeAttestors: map hasher(natural) u64 => ChallengeAttestations;
 	}
 }
 
@@ -429,7 +432,6 @@ decl_module!{
 			if !<ChallengeMap>::contains_key(&challenge_index) && valid_users_len > 0 {
 				let nonce = <Nonce>::get();
 				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
-				.using_encoded(|b| Blake2Hasher::hash(b))
 				.using_encoded(|mut b| u64::decode(&mut b))
 				.expect("hash must be of correct size; Qed");
 				let new_time_limit = new_random % last_index;
@@ -477,7 +479,7 @@ decl_module!{
 			let attestor = ensure_signed(origin)?;
 			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
 			let mut attestor_index;
-			for (user_index, user_account) in <Attestors<T>>::enumerate(){
+			for (user_index, user_account) in <Attestors<T>>::iter(){
 				if user_account == attestor {
 					attestor_index = user_index;
 				match challenge.expected_attestors.binary_search(&attestor_index) {
@@ -558,7 +560,7 @@ decl_module!{
 				),
 				Error::<T>::VerificationFailed
 			);
-			let temporary_root = system::RawOrigin::Root;
+			
 			// the rest of the logic is already in force_register_data so, just call that function.
 			match Self::force_register_data(temporary_root.into(), account, merkle_root) {
 				Ok(x) => x,
@@ -698,7 +700,7 @@ decl_module!{
 
 		fn unregister_attestor(origin){
 			let account = ensure_signed(origin)?;
-			for (user_index, user_account) in <Attestors<T>>::enumerate(){
+			for (user_index, user_account) in <Attestors<T>>::iter(){
 				if user_account == account {
 					<Attestors<T>>::remove(user_index);
 					let mut user_indexes = <AttestorsCount>::get();
@@ -738,7 +740,6 @@ decl_module!{
 				Some(last_index) => {
 				let nonce = <Nonce>::get();
 				let new_random = (T::Randomness::random(b"dat_verify_register"), &nonce, &account)
-					.using_encoded(|b| Blake2Hasher::hash(b))
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("hash must be of correct size; Qed");
 				let random_index = new_random % last_index;
@@ -794,7 +795,7 @@ decl_module!{
 				}
 				<DatHosters<T>>::insert(dat_key, hosters);
 			}
-			for (user_index, user_account) in <Users<T>>::enumerate(){
+			for (user_index, user_account) in <Users<T>>::iter(){
 				if user_account == account {
 					<Users<T>>::remove(user_index);
 					let mut user_indexes = <UsersCount>::get();
@@ -847,7 +848,7 @@ decl_module!{
 
 		//TODO: this is probably bad and should probably go into an offchain worker.
 		fn on_finalize(n: T::BlockNumber) {
-			for (challenge_index, user_index) in <ChallengeMap>::enumerate() {
+			for (challenge_index, user_index) in <ChallengeMap>::iter() {
 				let user = <SelectedUsers<T>>::get(user_index);
 				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
 				let time = <SelectedChallenges<T>>::get(challenge_index).2;
@@ -913,7 +914,6 @@ impl<T: Trait> Module<T> {
 		let nonce = <Nonce>::get();
 		let mut random_select: Vec<u64> = Vec::new();
 		let seed = (T::Randomness::random(b"dat_random_attestors"), nonce)
-			.using_encoded(|b| Blake2Hasher::hash(b))
 			.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
 			.expect("input is padded with zeroes; qed");
 		let members = <ActiveAttestors>::get();
@@ -925,74 +925,4 @@ impl<T: Trait> Module<T> {
 		random_select
 	}
 
-}
-
-
-/// TODO: tests for this module
-/// TODO: get some reference test vectors for the proof
-#[cfg(test)]
-mod tests {
-	use super::*;
-
-	use runtime_io::with_externalities;
-	use primitives::{H256, Blake2Hasher};
-	use support::{impl_outer_origin, assert_ok, parameter_types};
-	use sr_primitives::{traits::{BlakeTwo256, IdentityLookup}, testing::Header};
-	use sr_primitives::weights::Weight;
-	use sr_primitives::Perbill;
-
-	impl_outer_origin! {
-		pub enum Origin for Test {}
-	}
-
-	// For testing the module, we construct most of a mock runtime. This means
-	// first constructing a configuration type (`Test`) which `impl`s each of the
-	// configuration traits of modules we want to use.
-	#[derive(Clone, Eq, PartialEq)]
-	pub struct Test;
-	parameter_types! {
-		pub const BlockHashCount: u64 = 250;
-		pub const MaximumBlockWeight: Weight = 1024;
-		pub const MaximumBlockLength: u32 = 2 * 1024;
-		pub const AvailableBlockRatio: Perbill = Perbill::from_percent(75);
-	}
-	impl system::Trait for Test {
-		type Origin = Origin;
-		type Call = ();
-		type Index = u64;
-		type BlockNumber = u64;
-		type Hash = H256;
-		type Hashing = BlakeTwo256;
-		type AccountId = u64;
-		type Lookup = IdentityLookup<Self::AccountId>;
-		type Header = Header;
-		type WeightMultiplierUpdate = ();
-		type Event = ();
-		type BlockHashCount = BlockHashCount;
-		type MaximumBlockWeight = MaximumBlockWeight;
-		type MaximumBlockLength = MaximumBlockLength;
-		type AvailableBlockRatio = AvailableBlockRatio;
-		type Version = ();
-	}
-	impl Trait for Test {
-		type Event = ();
-	}
-	type TemplateModule = Module<Test>;
-
-	// This function basically just builds a genesis storage key/value store according to
-	// our desired mockup.
-	fn new_test_ext() -> runtime_io::TestExternalities<Blake2Hasher> {
-		system::GenesisConfig::default().build_storage::<Test>().unwrap().into()
-	}
-
-	#[test]
-	fn it_works_for_default_value() {
-		with_externalities(&mut new_test_ext(), || {
-			// Just a dummy test for the dummy funtion `do_something`
-			// calling the `do_something` function with a value 42
-			assert_ok!(TemplateModule::do_something(Origin::signed(1), 42));
-			// asserting that the stored value is equal to what we stored
-			assert_eq!(TemplateModule::something(), Some(42));
-		});
-	}
 }

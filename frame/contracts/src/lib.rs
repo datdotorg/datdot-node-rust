@@ -125,7 +125,7 @@ use frame_support::{
 	parameter_types, IsSubType,
 	weights::DispatchInfo,
 };
-use frame_support::traits::{OnReapAccount, OnUnbalanced, Currency, Get, Time, Randomness};
+use frame_support::traits::{OnKilledAccount, OnUnbalanced, Currency, Get, Time, Randomness};
 use frame_system::{self as system, ensure_signed, RawOrigin, ensure_root};
 use sp_core::storage::well_known_keys::CHILD_STORAGE_KEY_PREFIX;
 use pallet_contracts_primitives::{RentProjection, ContractAccessError};
@@ -254,7 +254,7 @@ where
 		let mut buf = Vec::new();
 		storage_root.using_encoded(|encoded| buf.extend_from_slice(encoded));
 		buf.extend_from_slice(code_hash.as_ref());
-		RawTombstoneContractInfo(Hasher::hash(&buf[..]), PhantomData)
+		RawTombstoneContractInfo(<Hasher as Hash>::hash(&buf[..]), PhantomData)
 	}
 }
 
@@ -923,26 +923,30 @@ decl_event! {
 }
 
 decl_storage! {
-	trait Store for Module<T: Trait> as Contract {
+	trait Store for Module<T: Trait> as Contracts {
 		/// Gas spent so far in this block.
 		GasSpent get(fn gas_spent): Gas;
 		/// Current cost schedule for contracts.
 		CurrentSchedule get(fn current_schedule) config(): Schedule = Schedule::default();
 		/// A mapping from an original code hash to the original code, untouched by instrumentation.
-		pub PristineCode: map hasher(blake2_256) CodeHash<T> => Option<Vec<u8>>;
+		pub PristineCode: map hasher(identity) CodeHash<T> => Option<Vec<u8>>;
 		/// A mapping between an original code hash and instrumented wasm code, ready for execution.
-		pub CodeStorage: map hasher(blake2_256) CodeHash<T> => Option<wasm::PrefabWasmModule>;
+		pub CodeStorage: map hasher(identity) CodeHash<T> => Option<wasm::PrefabWasmModule>;
 		/// The subtrie counter.
 		pub AccountCounter: u64 = 0;
 		/// The code associated with a given account.
-		pub ContractInfoOf: map hasher(blake2_256) T::AccountId => Option<ContractInfo<T>>;
+		pub ContractInfoOf: map hasher(twox_64_concat) T::AccountId => Option<ContractInfo<T>>;
 		/// The price of one unit of gas.
 		GasPrice get(fn gas_price) config(): BalanceOf<T> = 1.into();
 	}
 }
 
-impl<T: Trait> OnReapAccount<T::AccountId> for Module<T> {
-	fn on_reap_account(who: &T::AccountId) {
+// TODO: this should be removed in favour of a self-destruct contract host function allowing the
+// contract to delete all storage and the `ContractInfoOf` key and transfer remaining balance to
+// some other account. As it stands, it's an economic insecurity on any smart-contract chain.
+// https://github.com/paritytech/substrate/issues/4952
+impl<T: Trait> OnKilledAccount<T::AccountId> for Module<T> {
+	fn on_killed_account(who: &T::AccountId) {
 		if let Some(ContractInfo::Alive(info)) = <ContractInfoOf<T>>::take(who) {
 			child::kill_storage(&info.trie_id, info.child_trie_unique_id());
 		}

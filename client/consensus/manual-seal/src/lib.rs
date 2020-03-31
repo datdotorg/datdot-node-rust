@@ -224,7 +224,7 @@ mod tests {
 		txpool::Options,
 	};
 	use substrate_test_runtime_transaction_pool::{TestApi, uxt};
-	use sp_transaction_pool::TransactionPool;
+	use sp_transaction_pool::{TransactionPool, MaintainedTransactionPool};
 	use sp_runtime::generic::BlockId;
 	use sp_blockchain::HeaderBackend;
 	use sp_consensus::ImportedAux;
@@ -244,10 +244,10 @@ mod tests {
 		let select_chain = LongestChain::new(backend.clone());
 		let inherent_data_providers = InherentDataProviders::new();
 		let pool = Arc::new(BasicPool::new(Options::default(), api()).0);
-		let env = ProposerFactory {
-			transaction_pool: pool.clone(),
-			client: client.clone(),
-		};
+		let env = ProposerFactory::new(
+			client.clone(),
+			pool.clone()
+		);
 		// this test checks that blocks are created as soon as transactions are imported into the pool.
 		let (sender, receiver) = futures::channel::oneshot::channel();
 		let mut sender = Arc::new(Some(sender));
@@ -309,10 +309,10 @@ mod tests {
 		let select_chain = LongestChain::new(backend.clone());
 		let inherent_data_providers = InherentDataProviders::new();
 		let pool = Arc::new(BasicPool::new(Options::default(), api()).0);
-		let env = ProposerFactory {
-			transaction_pool: pool.clone(),
-			client: client.clone(),
-		};
+		let env = ProposerFactory::new(
+			client.clone(),
+			pool.clone()
+		);
 		// this test checks that blocks are created as soon as an engine command is sent over the stream.
 		let (mut sink, stream) = futures::channel::mpsc::channel(1024);
 		let future = run_manual_seal(
@@ -378,10 +378,10 @@ mod tests {
 		let inherent_data_providers = InherentDataProviders::new();
 		let pool_api = api();
 		let pool = Arc::new(BasicPool::new(Options::default(), pool_api.clone()).0);
-		let env = ProposerFactory {
-			transaction_pool: pool.clone(),
-			client: client.clone(),
-		};
+		let env = ProposerFactory::new(
+			client.clone(),
+			pool.clone(),
+		);
 		// this test checks that blocks are created as soon as an engine command is sent over the stream.
 		let (mut sink, stream) = futures::channel::mpsc::channel(1024);
 		let future = run_manual_seal(
@@ -432,14 +432,24 @@ mod tests {
 		assert!(backend.blockchain().header(BlockId::Number(0)).unwrap().is_some());
 		assert!(pool.submit_one(&BlockId::Number(1), uxt(Alice, 1)).await.is_ok());
 
+		pool.maintain(sp_transaction_pool::ChainEvent::NewBlock {
+			id: BlockId::Number(1),
+			header: backend.blockchain().header(BlockId::Number(1)).expect("db error").expect("imported above"),
+			is_new_best: true,
+			retracted: vec![],
+		}).await;
+
 		let (tx1, rx1) = futures::channel::oneshot::channel();
 		assert!(sink.send(EngineCommand::SealNewBlock {
-			parent_hash: Some(created_block.hash.clone()),
+			parent_hash: Some(created_block.hash),
 			sender: Some(tx1),
 			create_empty: false,
 			finalize: false,
 		}).await.is_ok());
-		assert!(rx1.await.unwrap().is_ok());
+		assert_matches::assert_matches!(
+			rx1.await.expect("should be no error receiving"),
+			Ok(_)
+		);
 		assert!(backend.blockchain().header(BlockId::Number(1)).unwrap().is_some());
 		pool_api.increment_nonce(Alice.into());
 
