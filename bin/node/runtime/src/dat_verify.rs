@@ -44,7 +44,7 @@ use codec::{Encode, Decode, Output};
 use sp_core::{
 	ed25519,
 	Hasher,
-	Blake2Hasher, 
+	Blake2Hasher,
 	H256,
 	H512,
 	convert_hash,
@@ -417,10 +417,11 @@ decl_storage! {
 
 decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		fn deposit_event() = default;
 		type Error = Error<T>;
+
+		fn deposit_event() = default;
 		
-		fn on_initialize(n: T::BlockNumber) {
+		fn on_initialize(n: T::BlockNumber) => Weight {
 			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			let challenge_index = <ChallengeIndex>::get();
 			let valid_users = <UsersCount>::get();
@@ -475,6 +476,8 @@ decl_module!{
 			}
 		}
 
+
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn submit_attestation(origin, challenge_index: u64, attestation: Attestation) {
 			let attestor = ensure_signed(origin)?;
 			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
@@ -502,7 +505,7 @@ decl_module!{
 			}
 		}
 
-		
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn force_clear_challenge(origin, account: T::AccountId, challenge_index: u64){
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
@@ -524,6 +527,7 @@ decl_module!{
 		//test things progressively, doing quicker computations first.
 		//gutted temporarily to demonstrate datdot flow.
 		//we should manually verify proof from raw bits.
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn submit_proof(origin, challenge_index: u64, proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			let temporary_root = system::RawOrigin::Root;
@@ -539,6 +543,7 @@ decl_module!{
 		}
 
 		// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn register_data(origin, merkle_root: (Public, RootHashPayload, H512)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
@@ -569,6 +574,7 @@ decl_module!{
 		}
 
 		//debug method when you don't have valid data for register_data, no validity checks, only root.
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
@@ -621,6 +627,7 @@ decl_module!{
 		}
 
 		//user stops requesting others pin their data
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn unregister_data(origin, index: DatIdIndex){
 			let account = ensure_signed(origin)?;
 			let pubkey = <DatKey>::get(index);
@@ -668,6 +675,7 @@ decl_module!{
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
 		}
 
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn register_attestor(origin){
 			let account = ensure_signed(origin)?;
 			let mut att_count = <AttestorsCount>::get();
@@ -698,6 +706,7 @@ decl_module!{
 			}
 		}
 
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn unregister_attestor(origin){
 			let account = ensure_signed(origin)?;
 			for (user_index, user_account) in <Attestors<T>>::iter(){
@@ -730,6 +739,7 @@ decl_module!{
 		}
 
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn register_seeder(origin) {
 			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
@@ -781,6 +791,7 @@ decl_module!{
 			}
 		} 
 
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn unregister_seeder(origin) {
 			let account = ensure_signed(origin)?;
 			for dat_id in <UsersStorage<T>>::get(&account) {
@@ -815,6 +826,7 @@ decl_module!{
 			<UsersStorage<T>>::remove(account);
 		}
 
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn punish_seeder(origin, punished: T::AccountId) {
 			ensure_root(origin)?;
 
@@ -840,13 +852,13 @@ decl_module!{
 			*/
 		}
 
-
+		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
 		fn reward_seeder(origin, rewarded: T::AccountId) {
 			ensure_root(origin)?;
 			// todo: punish seeder.
 		}
 
-		//TODO: this is probably bad and should probably go into an offchain worker.
+		//TODO: this is probably bad and should probably go into an offchain worker
 		fn on_finalize(n: T::BlockNumber) {
 			for (challenge_index, user_index) in <ChallengeMap>::iter() {
 				let user = <SelectedUsers<T>>::get(user_index);

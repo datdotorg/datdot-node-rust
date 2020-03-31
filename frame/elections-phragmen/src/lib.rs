@@ -87,13 +87,14 @@ use sp_runtime::{
 	print, DispatchResult, DispatchError, Perbill, traits::{Zero, StaticLookup, Convert},
 };
 use frame_support::{
-	decl_storage, decl_event, ensure, decl_module, decl_error, weights::SimpleDispatchInfo,
-	storage::{StorageMap, IterableStorageMap}, traits::{
+	decl_storage, decl_event, ensure, decl_module, decl_error,
+	weights::{SimpleDispatchInfo, Weight, WeighData}, storage::{StorageMap, IterableStorageMap},
+	traits::{
 		Currency, Get, LockableCurrency, LockIdentifier, ReservableCurrency, WithdrawReasons,
 		ChangeMembers, OnUnbalanced, WithdrawReason, Contains, BalanceStatus
 	}
 };
-use sp_phragmen::ExtendedBalance;
+use sp_phragmen::{build_support_map, ExtendedBalance};
 use frame_system::{self as system, ensure_signed, ensure_root};
 
 const MODULE_ID: LockIdentifier = *b"phrelect";
@@ -223,8 +224,10 @@ decl_module! {
 
 		fn deposit_event() = default;
 
-		fn on_runtime_upgrade() {
+		fn on_runtime_upgrade() -> Weight {
 			migration::migrate::<T>();
+
+			SimpleDispatchInfo::default().weigh_data(())
 		}
 
 		const CandidacyBond: BalanceOf<T> = T::CandidacyBond::get();
@@ -461,11 +464,13 @@ decl_module! {
 		}
 
 		/// What to do at the end of each block. Checks if an election needs to happen or not.
-		fn on_initialize(n: T::BlockNumber) {
+		fn on_initialize(n: T::BlockNumber) -> Weight {
 			if let Err(e) = Self::end_block(n) {
 				print("Guru meditation");
 				print(e);
 			}
+
+			SimpleDispatchInfo::default().weigh_data(())
 		}
 	}
 }
@@ -687,11 +692,17 @@ impl<T: Trait> Module<T> {
 				.filter_map(|(m, a)| if a.is_zero() { None } else { Some(m) } )
 				.collect::<Vec<T::AccountId>>();
 
-			let support_map = sp_phragmen::build_support_map::<_, _, _, T::CurrencyToVote, Perbill>(
-				&new_set,
-				&phragmen_result.assignments,
-				Self::locked_stake_of,
+			let stake_of = |who: &T::AccountId| -> ExtendedBalance {
+				<T::CurrencyToVote as Convert<BalanceOf<T>, u64>>::convert(
+					Self::locked_stake_of(who)
+				) as ExtendedBalance
+			};
+			let staked_assignments = sp_phragmen::assignment_ratio_to_staked(
+				phragmen_result.assignments,
+				stake_of,
 			);
+
+			let (support_map, _) = build_support_map::<T::AccountId>(&new_set, &staked_assignments);
 
 			let to_balance = |e: ExtendedBalance|
 				<T::CurrencyToVote as Convert<ExtendedBalance, BalanceOf<T>>>::convert(e);
@@ -1029,7 +1040,7 @@ mod tests {
 			VOTING_BOND.with(|v| *v.borrow_mut() = self.voter_bond);
 			TERM_DURATION.with(|v| *v.borrow_mut() = self.term_duration);
 			DESIRED_RUNNERS_UP.with(|v| *v.borrow_mut() = self.desired_runners_up);
-			GenesisConfig {
+			let mut ext: sp_io::TestExternalities = GenesisConfig {
 				pallet_balances: Some(pallet_balances::GenesisConfig::<Test>{
 					balances: vec![
 						(1, 10 * self.balance_factor),
@@ -1040,7 +1051,9 @@ mod tests {
 						(6, 60 * self.balance_factor)
 					],
 				}),
-			}.build_storage().unwrap().into()
+			}.build_storage().unwrap().into();
+			ext.execute_with(|| System::set_block_number(1));
+			ext
 		}
 	}
 
@@ -1061,7 +1074,6 @@ mod tests {
 	#[test]
 	fn params_should_work() {
 		ExtBuilder::default().build().execute_with(|| {
-			System::set_block_number(1);
 			assert_eq!(Elections::desired_members(), 2);
 			assert_eq!(Elections::term_duration(), 5);
 			assert_eq!(Elections::election_rounds(), 0);
@@ -1085,7 +1097,6 @@ mod tests {
 			.build()
 			.execute_with(||
 		{
-			System::set_block_number(1);
 			assert_eq!(Elections::term_duration(), 0);
 			assert_eq!(Elections::desired_members(), 2);
 			assert_eq!(Elections::election_rounds(), 0);
@@ -1526,10 +1537,9 @@ mod tests {
 			assert_eq!(balances(&5), (45, 5));
 
 			assert_ok!(Elections::report_defunct_voter(Origin::signed(5), 3));
-			assert_eq!(
-				System::events()[7].event,
-				Event::elections(RawEvent::VoterReported(3, 5, true))
-			);
+			assert!(System::events().iter().any(|event| {
+				event.event == Event::elections(RawEvent::VoterReported(3, 5, true))
+			}));
 
 			assert_eq!(balances(&3), (28, 0));
 			assert_eq!(balances(&5), (47, 5));
@@ -1555,10 +1565,9 @@ mod tests {
 			assert_eq!(balances(&5), (45, 5));
 
 			assert_ok!(Elections::report_defunct_voter(Origin::signed(5), 4));
-			assert_eq!(
-				System::events()[7].event,
-				Event::elections(RawEvent::VoterReported(4, 5, false))
-			);
+			assert!(System::events().iter().any(|event| {
+				event.event == Event::elections(RawEvent::VoterReported(4, 5, false))
+			}));
 
 			assert_eq!(balances(&4), (35, 5));
 			assert_eq!(balances(&5), (45, 3));
@@ -1966,10 +1975,9 @@ mod tests {
 			// 5 is an outgoing loser. will also get slashed.
 			assert_eq!(balances(&5), (45, 2));
 
-			assert_eq!(
-				System::events()[6].event,
-				Event::elections(RawEvent::NewTerm(vec![(4, 40), (5, 50)])),
-			);
+			assert!(System::events().iter().any(|event| {
+				event.event == Event::elections(RawEvent::NewTerm(vec![(4, 40), (5, 50)]))
+			}));
 		})
 	}
 
