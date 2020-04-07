@@ -182,7 +182,7 @@ pub fn get_account_id_from_seed<TPublic: Public>(seed: &str) -> AccountId where
 }
 
 /// Helper function to generate stash, controller and session key from seed
-pub fn get_authority_keys_from_seed(seed: &str) -> (
+pub fn authority_keys_from_seed(seed: &str) -> (
 	AccountId,
 	AccountId,
 	GrandpaId,
@@ -270,13 +270,14 @@ pub fn testnet_genesis(
 			.. Default::default()
 		}),
 		pallet_democracy: Some(DemocracyConfig::default()),
-		pallet_collective_Instance1: Some(CouncilConfig {
+		pallet_elections_phragmen: Some(ElectionsConfig {
 			members: endowed_accounts.iter()
 						.take((num_endowed_accounts + 1) / 2)
 						.cloned()
+						.map(|member| (member, STASH))
 						.collect(),
-			phantom: Default::default(),
 		}),
+		pallet_collective_Instance1: Some(CouncilConfig::default()),
 		pallet_collective_Instance2: Some(TechnicalCommitteeConfig {
 			members: endowed_accounts.iter()
 						.take((num_endowed_accounts + 1) / 2)
@@ -311,7 +312,7 @@ pub fn testnet_genesis(
 fn development_config_genesis() -> GenesisConfig {
 	testnet_genesis(
 		vec![
-			get_authority_keys_from_seed("Alice"),
+			authority_keys_from_seed("Alice"),
 		],
 		get_account_id_from_seed::<sr25519::Public>("Alice"),
 		None,
@@ -336,8 +337,8 @@ pub fn development_config() -> ChainSpec {
 fn local_testnet_genesis() -> GenesisConfig {
 	testnet_genesis(
 		vec![
-			get_authority_keys_from_seed("Alice"),
-			get_authority_keys_from_seed("Bob"),
+			authority_keys_from_seed("Alice"),
+			authority_keys_from_seed("Bob"),
 		],
 		get_account_id_from_seed::<sr25519::Public>("Alice"),
 		None,
@@ -369,7 +370,7 @@ pub(crate) mod tests {
 	fn local_testnet_genesis_instant_single() -> GenesisConfig {
 		testnet_genesis(
 			vec![
-				get_authority_keys_from_seed("Alice"),
+				authority_keys_from_seed("Alice"),
 			],
 			get_account_id_from_seed::<sr25519::Public>("Alice"),
 			None,

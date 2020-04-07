@@ -76,18 +76,19 @@ then
   exit 0
 fi
 
-if jq -e '.mergeable and .mergeable_state == "clean"' < companion_pr.json >/dev/null
+if jq -e '.mergeable' < companion_pr.json >/dev/null
 then
   boldprint "polkadot pr #${pr_companion} mergeable"
 else
-  boldprint "polkadot pr #${pr_companion} not mergeable or clean"
+  boldprint "polkadot pr #${pr_companion} not mergeable"
   exit 1
 fi
 
 curl -H "${github_header}" -sS -o companion_pr_reviews.json \
   ${github_api_polkadot_pull_url}/${pr_companion}/reviews 
 
-if [ "$(jq -r -e '.[].state' < companion_pr_reviews.json | uniq)" != "APPROVED" ]
+if [ -n "$(jq -r -e '.[].state | select(. == "CHANGES_REQUESTED")' < companion_pr_reviews.json)" ] && \
+  [ -z "$(jq -r -e '.[].state | select(. == "APPROVED")' < companion_pr_reviews.json)" ]
 then
   boldprint "polkadot pr #${pr_companion} not APPROVED"
   exit 1

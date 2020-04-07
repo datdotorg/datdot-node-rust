@@ -248,21 +248,10 @@ pub mod network_state;
 
 pub use service::{NetworkService, NetworkStateInfo, NetworkWorker, ExHashT, ReportHandle};
 pub use protocol::PeerInfo;
-pub use protocol::event::{Event, DhtEvent};
+pub use protocol::event::{Event, DhtEvent, ObservedRole};
 pub use protocol::sync::SyncState;
 pub use libp2p::{Multiaddr, PeerId};
 #[doc(inline)]
 pub use libp2p::multiaddr;
 
 pub use sc_peerset::ReputationChange;
-
-/// Extension trait for `NetworkBehaviour` that also accepts discovering nodes.
-trait DiscoveryNetBehaviour {
-	/// Notify the protocol that we have learned about the existence of nodes.
-	///
-	/// Can (or most likely will) be called multiple times with the same `PeerId`s.
-	///
-	/// Also note that there is no notification for expired nodes. The implementer must add a TTL
-	/// system, or remove nodes that will fail to reach.
-	fn add_discovered_nodes(&mut self, nodes: impl Iterator<Item = PeerId>);
-}

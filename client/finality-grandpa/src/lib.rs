@@ -55,7 +55,6 @@
 use futures::prelude::*;
 use futures::StreamExt;
 use log::{debug, info};
-use futures::channel::mpsc;
 use sc_client_api::{
 	backend::{AuxStore, Backend},
 	LockImportRun, BlockchainEvents, CallExecutor,
@@ -63,12 +62,14 @@ use sc_client_api::{
 };
 use sp_blockchain::{HeaderBackend, Error as ClientError, HeaderMetadata};
 use parity_scale_codec::{Decode, Encode};
+use prometheus_endpoint::{PrometheusError, Registry};
 use sp_runtime::generic::BlockId;
 use sp_runtime::traits::{NumberFor, Block as BlockT, DigestFor, Zero};
 use sc_keystore::KeyStorePtr;
 use sp_inherents::InherentDataProviders;
 use sp_consensus::{SelectChain, BlockImport};
 use sp_core::Pair;
+use sp_utils::mpsc::{tracing_unbounded, TracingUnboundedReceiver};
 use sc_telemetry::{telemetry, CONSENSUS_INFO, CONSENSUS_DEBUG};
 use serde_json;
 
@@ -104,7 +105,7 @@ pub use voting_rule::{
 };
 
 use aux_schema::PersistentData;
-use environment::{Environment, VoterSetState, Metrics};
+use environment::{Environment, VoterSetState};
 use import::GrandpaBlockImport;
 use until_imported::UntilGlobalMessageBlocksImported;
 use communication::{NetworkBridge, Network as NetworkT};
@@ -378,7 +379,7 @@ pub struct LinkHalf<Block: BlockT, C, SC> {
 	client: Arc<C>,
 	select_chain: SC,
 	persistent_data: PersistentData<Block>,
-	voter_commands_rx: mpsc::UnboundedReceiver<VoterCommand<Block::Hash, NumberFor<Block>>>,
+	voter_commands_rx: TracingUnboundedReceiver<VoterCommand<Block::Hash, NumberFor<Block>>>,
 }
 
 /// Provider for the Grandpa authority set configured on the genesis block.
@@ -475,7 +476,7 @@ where
 		}
 	)?;
 
-	let (voter_commands_tx, voter_commands_rx) = mpsc::unbounded();
+	let (voter_commands_tx, voter_commands_rx) = tracing_unbounded("mpsc_grandpa_voter_command");
 
 	// create pending change objects with 0 delay and enacted on finality
 	// (i.e. standard changes) for each authority set hard fork.
@@ -519,6 +520,7 @@ fn global_communication<BE, Block: BlockT, C, N>(
 	client: Arc<C>,
 	network: &NetworkBridge<Block, N>,
 	keystore: &Option<KeyStorePtr>,
+	metrics: Option<until_imported::Metrics>,
 ) -> (
 	impl Stream<
 		Item = Result<CommunicationInH<Block, Block::Hash>, CommandOrError<Block::Hash, NumberFor<Block>>>,
@@ -549,6 +551,7 @@ fn global_communication<BE, Block: BlockT, C, N>(
 		client.clone(),
 		global_in,
 		"global",
+		metrics,
 	);
 
 	let global_in = global_in.map_err(CommandOrError::from);
@@ -595,7 +598,7 @@ pub struct GrandpaParams<Block: BlockT, C, N, SC, VR> {
 	/// The inherent data providers.
 	pub inherent_data_providers: InherentDataProviders,
 	/// If supplied, can be used to hook on telemetry connection established events.
-	pub telemetry_on_connect: Option<futures::channel::mpsc::UnboundedReceiver<()>>,
+	pub telemetry_on_connect: Option<TracingUnboundedReceiver<()>>,
 	/// A voting rule used to potentially restrict target votes.
 	pub voting_rule: VR,
 	/// The prometheus metrics registry.
@@ -696,13 +699,30 @@ pub fn run_grandpa_voter<Block: BlockT, BE: 'static, C, N, SC, VR>(
 	Ok(future::select(voter_work, telemetry_task).map(drop))
 }
 
+struct Metrics {
+	environment: environment::Metrics,
+	until_imported: until_imported::Metrics,
+}
+
+impl Metrics {
+	fn register(registry: &Registry) -> Result<Self, PrometheusError> {
+		Ok(Metrics {
+			environment: environment::Metrics::register(registry)?,
+			until_imported: until_imported::Metrics::register(registry)?,
+		})
+	}
+}
+
 /// Future that powers the voter.
 #[must_use]
 struct VoterWork<B, Block: BlockT, C, N: NetworkT<Block>, SC, VR> {
 	voter: Pin<Box<dyn Future<Output = Result<(), CommandOrError<Block::Hash, NumberFor<Block>>>> + Send>>,
 	env: Arc<Environment<B, Block, C, N, SC, VR>>,
-	voter_commands_rx: mpsc::UnboundedReceiver<VoterCommand<Block::Hash, NumberFor<Block>>>,
+	voter_commands_rx: TracingUnboundedReceiver<VoterCommand<Block::Hash, NumberFor<Block>>>,
 	network: NetworkBridge<Block, N>,
+
+	/// Prometheus metrics.
+	metrics: Option<Metrics>,
 }
 
 impl<B, Block, C, N, SC, VR> VoterWork<B, Block, C, N, SC, VR>
@@ -722,9 +742,17 @@ where
 		select_chain: SC,
 		voting_rule: VR,
 		persistent_data: PersistentData<Block>,
-		voter_commands_rx: mpsc::UnboundedReceiver<VoterCommand<Block::Hash, NumberFor<Block>>>,
+		voter_commands_rx: TracingUnboundedReceiver<VoterCommand<Block::Hash, NumberFor<Block>>>,
 		prometheus_registry: Option<prometheus_endpoint::Registry>,
 	) -> Self {
+		let metrics = match prometheus_registry.as_ref().map(Metrics::register) {
+			Some(Ok(metrics)) => Some(metrics),
+			Some(Err(e)) => {
+				debug!(target: "afg", "Failed to register metrics: {:?}", e);
+				None
+			}
+			None => None,
+		};
 
 		let voters = persistent_data.authority_set.current_authorities();
 		let env = Arc::new(Environment {
@@ -738,10 +766,7 @@ where
 			authority_set: persistent_data.authority_set.clone(),
 			consensus_changes: persistent_data.consensus_changes.clone(),
 			voter_set_state: persistent_data.set_state.clone(),
-			metrics: prometheus_registry.map(|registry| {
-				Metrics::register(&registry)
-					.expect("Other metrics would have failed to register before these; qed")
-			}),
+			metrics: metrics.as_ref().map(|m| m.environment.clone()),
 			_phantom: PhantomData,
 		});
 
@@ -752,6 +777,7 @@ where
 			env,
 			voter_commands_rx,
 			network,
+			metrics,
 		};
 		work.rebuild_voter();
 		work
@@ -800,6 +826,7 @@ where
 					self.env.client.clone(),
 					&self.env.network,
 					&self.env.config.keystore,
+					self.metrics.as_ref().map(|m| m.until_imported.clone()),
 				);
 
 				let last_completed_round = completed_rounds.last();

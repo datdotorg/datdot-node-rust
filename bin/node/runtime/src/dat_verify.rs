@@ -389,7 +389,7 @@ decl_storage! {
 		// each dat has a vec of users pinning it
 		pub DatHosters: map hasher(natural) Public => Vec<T::AccountId>;
 		// each user has a mapping and vec of dats they want seeded
-		pub UserRequestsMap: map hasher(natural) Public => T::AccountId;
+		pub UserRequestsMap: map hasher(prehashed) Public => T::AccountId;
 
 		// current check condition
 		pub ChallengeIndex: u64;

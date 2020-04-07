@@ -21,6 +21,7 @@
 use sc_cli::VersionInfo;
 
 fn main() -> sc_cli::Result<()> {
+<<<<<<< HEAD
 	let version = VersionInfo {
 		name: "Datdot Node",
 		commit: env!("VERGEN_SHA_SHORT"),
@@ -33,4 +34,7 @@ fn main() -> sc_cli::Result<()> {
 	};
 
 	node_cli::run(std::env::args(), version)
+=======
+	node_cli::run()
+>>>>>>> 028a71594f93edc1c105c85f425760943a362f8e
 }
