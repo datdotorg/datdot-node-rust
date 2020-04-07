@@ -377,9 +377,9 @@ decl_storage! {
 		pub DatKey get(public_key): map hasher(natural) DatIdIndex => Public;
 		// Each dat archive has a tree size
 		// TODO: remove calls to this when expecting indeces
-		pub TreeSize get(tree_size): map hasher(prehashed) Public => DatSize;
+		pub TreeSize get(tree_size): map hasher(natural) Public => DatSize;
 		// each dat archive has a merkle root
-		pub MerkleRoot get(merkle_root): map hasher(prehashed) Public => (H256, Signature);
+		pub MerkleRoot get(merkle_root): map hasher(natural) Public => (H256, Signature);
 		// vec of occupied user indeces for when users are removed.
 		pub UsersCount: Vec<u64>;
 		// users are put into an "array"
@@ -387,9 +387,9 @@ decl_storage! {
 		// each user has a vec of dats they seed
 		pub UsersStorage: map hasher(natural) T::AccountId => Vec<DatIdIndex>;
 		// each dat has a vec of users pinning it
-		pub DatHosters: map hasher(prehashed) Public => Vec<T::AccountId>;
+		pub DatHosters: map hasher(natural) Public => Vec<T::AccountId>;
 		// each user has a mapping and vec of dats they want seeded
-		pub UserRequestsMap: map hasher(prehashed) Public => T::AccountId;
+		pub UserRequestsMap: map hasher(natural) Public => T::AccountId;
 
 		// current check condition
 		pub ChallengeIndex: u64;
