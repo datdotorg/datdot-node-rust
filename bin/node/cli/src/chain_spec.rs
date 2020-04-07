@@ -22,7 +22,7 @@ use serde::{Serialize, Deserialize};
 use node_runtime::{
 	AuthorityDiscoveryConfig, BabeConfig, BalancesConfig, CouncilConfig, DemocracyConfig,
 	GrandpaConfig, ImOnlineConfig, IndicesConfig, SessionConfig, SessionKeys, StakerStatus, StakingConfig, SudoConfig,
-	SystemConfig, TechnicalCommitteeConfig, DatCollectiveConfig, WASM_BINARY,
+	SystemConfig, TechnicalCommitteeConfig, WASM_BINARY,
 };
 use node_runtime::Block;
 use node_runtime::constants::currency::*;
@@ -283,11 +283,6 @@ pub fn testnet_genesis(
 						.take((num_endowed_accounts + 1) / 2)
 						.cloned()
 						.collect(),
-			phantom: Default::default(),
-		}),
-		pallet_collective_Instance3: Some(DatCollectiveConfig {
-			members: endowed_accounts.iter().cloned()
-				.collect::<Vec<_>>()[..(num_endowed_accounts + 1) / 2].to_vec(),
 			phantom: Default::default(),
 		}),
 		pallet_sudo: Some(SudoConfig {

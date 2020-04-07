@@ -128,7 +128,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 	// and set impl_version to 0. If only runtime
 	// implementation changes and behavior does not, then leave spec_version as
 	// is and increment impl_version.
-	spec_version: 18,
+	spec_version: 19,
 	impl_version: 0,
 	apis: RUNTIME_API_VERSIONS,
 };
@@ -467,14 +467,6 @@ impl pallet_membership::Trait<pallet_membership::Instance1> for Runtime {
 	type MembershipChanged = TechnicalCommittee;
 }
 
-type DatUsers = pallet_collective::Instance3;
-impl pallet_collective::Trait<DatUsers> for Runtime {
-	type Origin = Origin;
-	type Proposal = Call;
-	type Event = Event;
-	type MotionDuration = CouncilMotionDuration;
-}
-
 impl pallet_sudo::Trait for Runtime {
 	type Event = Event;
 	type Call = Call;
@@ -546,8 +538,6 @@ impl dat_verify::Trait for Runtime {
 	type Randomness = RandomnessCollectiveFlip;
 	type Hash = Hash;
 	type ForceOrigin = pallet_collective::EnsureMember<AccountId, CouncilCollective>;
-	type SeederMembership = DatCollective; //todo: manipulate staking via autostake here
-	type UserMembership = DatCollective;
 	type Proposal = Call;
 	type AttestorsPerChallenge = AttestorsPerChallenge;
 }
@@ -598,10 +588,8 @@ construct_runtime!(
 		Offences: pallet_offences::{Module, Call, Storage, Event},
 		RandomnessCollectiveFlip: pallet_randomness_collective_flip::{Module, Call, Storage},
 		Identity: pallet_identity::{Module, Call, Storage, Event<T>},
-		DatCollective: pallet_collective::<Instance3>::{Module, Call, Storage, Origin<T>, Event<T>, Config<T>},
 		DatVerify: dat_verify::{Module, Call, Storage, Event<T>},
 		Recovery: pallet_recovery::{Module, Call, Storage, Event<T>},
-		Vesting: pallet_vesting::{Module, Call, Storage, Event<T>, Config<T>},
 		Scheduler: pallet_scheduler::{Module, Call, Storage, Event<T>},
 	}
 );
@@ -787,7 +775,6 @@ impl_runtime_apis! {
 			add_benchmark!(params, batches, b"staking", Staking);
 			add_benchmark!(params, batches, b"timestamp", Timestamp);
 			add_benchmark!(params, batches, b"utility", Utility);
-			add_benchmark!(params, batches, b"vesting", Vesting);
 			add_benchmark!(params, batches, b"offences", OffencesBench::<Runtime>);
 
 			if batches.is_empty() { return Err("Benchmark not found for this pallet.".into()) }

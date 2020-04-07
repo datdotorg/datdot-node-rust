@@ -26,6 +26,7 @@ sp-offchain = { version = "2.0.0-alpha.5", default-features = false, path = "../
 sp-core = { version = "2.0.0-alpha.5", default-features = false, path = "../../../primitives/core" }
 sp-std = { version = "2.0.0-alpha.5", default-features = false, path = "../../../primitives/std" }
 sp-api = { version = "2.0.0-alpha.5", default-features = false, path = "../../../primitives/api" }
+sp-io = { version = "2.0.0-alpha.5", default-features = false, path = "../../../primitives/io" }
 sp-runtime = { version = "2.0.0-alpha.5", default-features = false, path = "../../../primitives/runtime" }
 sp-staking = { version = "2.0.0-alpha.5", default-features = false, path = "../../../primitives/staking" }
 sp-keyring = { version = "2.0.0-alpha.5", optional = true, path = "../../../primitives/keyring" }
@@ -76,9 +77,6 @@ pallet-vesting = { version = "2.0.0-alpha.5", default-features = false, path = "
 [build-dependencies]
 wasm-builder-runner = { version = "1.0.5", package = "substrate-wasm-builder-runner", path = "../../../utils/wasm-builder-runner" }
 
-[dev-dependencies]
-sp-io = { version = "2.0.0-alpha.5", path = "../../../primitives/io" }
-
 [features]
 default = ["std"]
 std = [
@@ -113,6 +111,7 @@ std = [
 	"serde",
 	"pallet-session/std",
 	"sp-api/std",
+	"sp-io/std",
 	"sp-runtime/std",
 	"sp-staking/std",
 	"pallet-staking/std",

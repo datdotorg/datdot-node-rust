@@ -26,9 +26,14 @@ use frame_support::{
 		IterableStorageMap
 	},
 	traits::{
+		EnsureOrigin,
 		Get,
 		Randomness,
 		ChangeMembers,
+	},
+	weights::{
+		SimpleDispatchInfo,
+		Weight,
 	},
 };
 use sp_std::convert::{
@@ -44,7 +49,6 @@ use codec::{Encode, Decode, Output};
 use sp_core::{
 	ed25519,
 	Hasher,
-	Blake2Hasher,
 	H256,
 	H512,
 	convert_hash,
@@ -58,7 +62,6 @@ use sp_runtime::{
 		CheckEqual,
 		Dispatchable,
 		StaticLookup,
-		EnsureOrigin,
 		SimpleBitOps,
 		MaybeDisplay,
 		TrailingZeroInput,
@@ -72,6 +75,7 @@ use sp_runtime::{
 		InvalidTransaction
 	}
 };
+use sp_io::hashing::blake2_256;
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 
 pub type Public = ed25519::Public;
@@ -85,8 +89,6 @@ pub trait Trait: system::Trait{
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
 	type ForceOrigin: EnsureOrigin<<Self as system::Trait>::Origin>;
-	type SeederMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
-	type UserMembership: ChangeMembers<<Self as system::Trait>::AccountId>;
 	type Proposal: Parameter + Dispatchable<Origin=Self::Origin>;
 	type AttestorsPerChallenge: Get<u32>;
 }
@@ -239,7 +241,7 @@ trait HashPayload where Self: Sized + Encode {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
 			native::info!("Hash Payload: {:x?}", b);
-			Blake2Hasher::hash(b)
+			blake2_256(b).into()
 		})
 	}
 }
@@ -275,7 +277,7 @@ impl HashPayload for RootHashPayload {
 				}
 			};
 			native::info!("Root Hash Clean Payload [{:#?}]: {:x?}", bits.len(), bits);
-			Blake2Hasher::hash(bits.as_slice())
+			blake2_256(bits.as_slice()).into()
 		})
 	}
 }
@@ -294,7 +296,7 @@ impl HashPayload for ParentHashPayload {
 			cleanbits.extend_from_slice(hash_type);
 			cleanbits.extend_from_slice(total_length);
 			native::info!("Parent Hash Payload [{:x?}]: {:x?}", b.len(), b);
-			Blake2Hasher::hash(cleanbits.as_slice())
+			blake2_256(cleanbits.as_slice()).into()
 		})
 	}
 }
@@ -312,7 +314,7 @@ impl HashPayload for ChunkHashPayload {
 			native::info!("Child nodes raw: {:x?}", dirtycopy.get(9..).expect(""));
 			cleanbits.extend_from_slice(hash_type);
 			cleanbits.extend_from_slice(total_length);
-			Blake2Hasher::hash(cleanbits.as_slice())
+			blake2_256(cleanbits.as_slice()).into()
 		})
 	}
 }
@@ -355,15 +357,24 @@ decl_event!(
 
 decl_error! {
     pub enum Error for Module<T: Trait> {
+		/// The call was made with an incorrect account
 		PermissionError,
+		/// Potentially valid merkle proof, no signature present
 		UnsignedProof,
+		/// Signature verification failed
 		VerificationFailed,
+		/// Potentially valid merkle proof, proves wrong index
 		ProvesWrongChunk,
+		/// Potentially valid merkle proof, no chunk provided
 		MissingLeaf,
+		/// Chunk hash does not match expected value
 		ChunkHashVerificationFailed,
+		/// Root hash does not match expected value
 		RootHashVerificationFailed,
+		/// Chain state is invalid - requires manual intervention
 		InvalidState,
-		InvalidTreeSize
+		/// declared tree size is invalid
+		InvalidTreeSize,
     }
 }
 
@@ -374,176 +385,77 @@ decl_storage! {
 		// A vec of free indeces, with the last item usable for `len`
 		pub DatId get(next_id): DatIdVec;
 		// Each dat archive has a public key
-		pub DatKey get(public_key): map hasher(natural) DatIdIndex => Public;
+		pub DatKey get(public_key): map hasher(twox_64_concat) DatIdIndex => Public;
 		// Each dat archive has a tree size
 		// TODO: remove calls to this when expecting indeces
-		pub TreeSize get(tree_size): map hasher(natural) Public => DatSize;
+		pub TreeSize get(tree_size): map hasher(twox_64_concat) Public => DatSize;
 		// each dat archive has a merkle root
-		pub MerkleRoot get(merkle_root): map hasher(natural) Public => (H256, Signature);
+		pub MerkleRoot get(merkle_root): map hasher(twox_64_concat) Public => (H256, Signature);
 		// vec of occupied user indeces for when users are removed.
 		pub UsersCount: Vec<u64>;
 		// users are put into an "array"
-		pub Users get(user): map hasher(natural) UserIdIndex => T::AccountId;
+		pub Users get(user): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
-		pub UsersStorage: map hasher(natural) T::AccountId => Vec<DatIdIndex>;
+		pub UsersStorage: map hasher(twox_64_concat) T::AccountId => Vec<DatIdIndex>;
 		// each dat has a vec of users pinning it
-		pub DatHosters: map hasher(natural) Public => Vec<T::AccountId>;
+		pub DatHosters: map hasher(twox_64_concat) Public => Vec<T::AccountId>;
 		// each user has a mapping and vec of dats they want seeded
-		pub UserRequestsMap: map hasher(prehashed) Public => T::AccountId;
+		pub UserRequestsMap: map hasher(twox_64_concat) Public => T::AccountId;
 
 		// current check condition
 		pub ChallengeIndex: u64;
 		pub UserIndex: u64;
 		// Challenge => User
-		pub ChallengeMap: map hasher(natural) u64 => u64;
+		pub ChallengeMap: map hasher(twox_64_concat) u64 => u64;
 		// Dat and which index to verify, and deadline
-		pub SelectedChallenges: map hasher(natural) u64 => (Public, u64, T::BlockNumber);
+		pub SelectedChallenges: map hasher(twox_64_concat) u64 => (Public, u64, T::BlockNumber);
 		pub RemovedDats: Vec<Public>;
-		pub SelectedUsers: map hasher(natural) u64 => T::AccountId;
+		pub SelectedUsers: map hasher(twox_64_concat) u64 => T::AccountId;
 		// (index, challenge count)
-		pub SelectedUserIndex: map hasher(natural) T::AccountId => (u64, u64);
+		pub SelectedUserIndex: map hasher(twox_64_concat) T::AccountId => (u64, u64);
 		pub Nonce: u64;
 
 		// all attestors
-		pub Attestors get(atts): map hasher(natural) UserIdIndex => T::AccountId;
+		pub Attestors get(atts): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
 		// vec of occupied attestor indeces for when attestors are removed.
 		pub AttestorsCount: Vec<u64>;
 		// non-friend, randomly-selectable attestors.
 		pub ActiveAttestors: Vec<u64>;
 		// challenge => ([expected attestors], [rewarded friends], [seen attestations])
-		pub ChallengeAttestors: map hasher(natural) u64 => ChallengeAttestations;
+		pub ChallengeAttestors: map hasher(twox_64_concat) u64 => ChallengeAttestations;
 	}
 }
 
 decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		type Error = Error<T>;
-
-		fn deposit_event() = default;
 		
-		fn on_initialize(n: T::BlockNumber) => Weight {
-			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
-			let challenge_index = <ChallengeIndex>::get();
-			let valid_users = <UsersCount>::get();
-			let valid_users_len = valid_users.len();
+		fn deposit_event() = default;
+		const AttestorsPerChallenge: u32 = T::AttestorsPerChallenge::get();
 
-			match dat_vec.last() {
-				Some(last_index) => {
-			// if no one is currently selected to give proof, select someone if someone exists to select
-			if !<ChallengeMap>::contains_key(&challenge_index) && valid_users_len > 0 {
-				let nonce = <Nonce>::get();
-				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
-				.using_encoded(|mut b| u64::decode(&mut b))
-				.expect("hash must be of correct size; Qed");
-				let new_time_limit = new_random % last_index;
-				let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
-				let future_block = 
-					n + T::BlockNumber::from(challenge_length);
-				
-				let selected_user = (new_random as usize % valid_users_len);
-				let random_user_index = valid_users.get(selected_user)
-					.expect("the remainder is always in bounds when % len");
-				let random_user = <Users<T>>::get(random_user_index);
-				let users_dats = <UsersStorage<T>>::get(&random_user);
-				let users_dats_len = users_dats.len();
-				let random_dat_id = users_dats.get(new_random as usize % users_dats_len)
-					.expect("the remainder is always in bounds when % len");
-				let random_dat = <DatKey>::get(random_dat_id);
-				let dat_tree_len = <TreeSize>::get(&random_dat);
-				let mut random_leave = 0;
-				if dat_tree_len != 0 { // avoid 0 divisor 
-					random_leave = new_random % dat_tree_len;
-				} 
-				let y : u64;
-				if <SelectedUserIndex<T>>::contains_key(&random_user) {
-					let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
-					<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
-					y = user_index;
-				} else {	
-					let user_index = <UserIndex>::get();
-					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
-					<UserIndex>::put(<UserIndex>::get() + 1);
-					y = user_index;
-				}
-				<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leave, future_block));
-				<SelectedUsers<T>>::insert(&y, &random_user);
-				<ChallengeMap>::insert(challenge_index, y);
-				<Nonce>::put(<Nonce>::get() + 1);
-				<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
-				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
-			}},
-				None => (),
-			}
-		}
-
-
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
-		fn submit_attestation(origin, challenge_index: u64, attestation: Attestation) {
-			let attestor = ensure_signed(origin)?;
-			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
-			let mut attestor_index;
-			for (user_index, user_account) in <Attestors<T>>::iter(){
-				if user_account == attestor {
-					attestor_index = user_index;
-				match challenge.expected_attestors.binary_search(&attestor_index) {
-					Ok(index) => {
-						challenge.expected_attestors.remove(index);
-						challenge.seen.push((attestor_index, attestation));
-					},
-					Err(_) => (),
-				}
-				match challenge.expected_friends.binary_search(&attestor_index) {
-					Ok(index) => {
-						challenge.expected_friends.remove(index);
-						challenge.seen.push((attestor_index, attestation));
-					},
-					Err(_) => (),
-				}
-				Self::deposit_event(RawEvent::Attest(attestor, attestation));
-				break;
-				}
-			}
-		}
-
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+		#[weight = SimpleDispatchInfo::default()]
 		fn force_clear_challenge(origin, account: T::AccountId, challenge_index: u64){
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
 				.or_else(ensure_root)?; 
-			let account_index = <ChallengeMap>::get(&challenge_index);
-			let (_, count) = <SelectedUserIndex<T>>::get(&account);
-			match count {
-				1 => {	
-					<SelectedUsers<T>>::remove(account_index);
-					<SelectedUserIndex<T>>::remove(account);
-				},
-				_ => <SelectedUserIndex<T>>::insert(account, (account_index, count-1))
-			}
-			<SelectedChallenges<T>>::remove(challenge_index);
-			<ChallengeMap>::remove(challenge_index);
+			Self::clear_challenge(account, challenge_index);
+			
 		}
 		
-		
+
 		//test things progressively, doing quicker computations first.
 		//gutted temporarily to demonstrate datdot flow.
 		//we should manually verify proof from raw bits.
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+		#[weight = SimpleDispatchInfo::default()]
 		fn submit_proof(origin, challenge_index: u64, proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
-			let temporary_root = system::RawOrigin::Root;
-			match Self::force_clear_challenge(temporary_root.into(), account, challenge_index) {
-				Ok(x) => {
-					<ChallengeAttestors>::insert(challenge_index, Self::get_attestors_for(challenge_index)); //todo populate
-					Self::deposit_event(RawEvent::AttestPhase(true, challenge_index));
-					x
-				},
-				Err(x) => fail!(x),
-			}
-
+			// TODO - verify proof!
+			Self::clear_challenge(account, challenge_index);
 		}
 
-		// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+
+		/// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
+		#[weight = SimpleDispatchInfo::default()]
 		fn register_data(origin, merkle_root: (Public, RootHashPayload, H512)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
@@ -565,16 +477,11 @@ decl_module!{
 				),
 				Error::<T>::VerificationFailed
 			);
-			
-			// the rest of the logic is already in force_register_data so, just call that function.
-			match Self::force_register_data(temporary_root.into(), account, merkle_root) {
-				Ok(x) => x,
-				Err(x) => fail!(x),
-			}
+			Self::forced_register_data(account, merkle_root)
 		}
 
 		//debug method when you don't have valid data for register_data, no validity checks, only root.
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+		#[weight = SimpleDispatchInfo::default()]
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
@@ -584,50 +491,11 @@ decl_module!{
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
 				.or_else(ensure_root)?;
-			let pubkey = merkle_root.0;
-			let sig = Signature::from_h512(merkle_root.2);
-			let mut lowest_free_index : DatIdIndex = 0;
-			let mut tree_size : u64 = u64::min_value();
-			let root_hash = merkle_root.1.hash(); //todo: do not calculate twice!
-			for child in merkle_root.1.children {
-				tree_size += child.total_length;
-			}
-			native::info!("{:#?}", tree_size);
-			ensure!(
-				tree_size >= 1,
-				Error::<T>::InvalidTreeSize
-			);
-			let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
-			match <MerkleRoot>::contains_key(&pubkey){
-				true => (),
-				false => {
-					match dat_vec.first() {
-						Some(_) => {
-							dat_vec.sort_unstable();
-							lowest_free_index = dat_vec.remove(0);
-							dat_vec.push(lowest_free_index + 1);
-							dat_vec.sort_unstable();
-							dat_vec.dedup();
-						},
-						None => {
-							//add an element if the vec is empty
-							dat_vec.push(1);
-							lowest_free_index = 1;
-						},
-					}
-					//register new unknown dats
-					<DatKey>::insert(&lowest_free_index, &pubkey)
-				},
-			}
-			<MerkleRoot>::insert(&pubkey, (root_hash, sig));
-			<DatId>::put(dat_vec);
-			<TreeSize>::insert(&pubkey, tree_size);
-			<UserRequestsMap<T>>::insert(&pubkey, &account);
-			Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
+			Self::forced_register_data(account, merkle_root)
 		}
 
 		//user stops requesting others pin their data
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+		#[weight = SimpleDispatchInfo::default()]
 		fn unregister_data(origin, index: DatIdIndex){
 			let account = ensure_signed(origin)?;
 			let pubkey = <DatKey>::get(index);
@@ -675,7 +543,8 @@ decl_module!{
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
 		}
 
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+
+		#[weight = SimpleDispatchInfo::default()]
 		fn register_attestor(origin){
 			let account = ensure_signed(origin)?;
 			let mut att_count = <AttestorsCount>::get();
@@ -706,7 +575,35 @@ decl_module!{
 			}
 		}
 
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+		#[weight = SimpleDispatchInfo::default()]
+		fn submit_attestation(origin, challenge_index: u64, attestation: Attestation) {
+			let attestor = ensure_signed(origin)?;
+			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
+			let mut attestor_index;
+			for (user_index, user_account) in <Attestors<T>>::iter(){
+				if user_account == attestor {
+					attestor_index = user_index;
+				match challenge.expected_attestors.binary_search(&attestor_index) {
+					Ok(index) => {
+						challenge.expected_attestors.remove(index);
+						challenge.seen.push((attestor_index, attestation));
+					},
+					Err(_) => (),
+				}
+				match challenge.expected_friends.binary_search(&attestor_index) {
+					Ok(index) => {
+						challenge.expected_friends.remove(index);
+						challenge.seen.push((attestor_index, attestation));
+					},
+					Err(_) => (),
+				}
+				Self::deposit_event(RawEvent::Attest(attestor, attestation));
+				break;
+				}
+			}
+		}
+
+		#[weight = SimpleDispatchInfo::default()]
 		fn unregister_attestor(origin){
 			let account = ensure_signed(origin)?;
 			for (user_index, user_account) in <Attestors<T>>::iter(){
@@ -738,8 +635,9 @@ decl_module!{
 			}
 		}
 
+		
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+		#[weight = SimpleDispatchInfo::default()]
 		fn register_seeder(origin) {
 			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
@@ -791,7 +689,8 @@ decl_module!{
 			}
 		} 
 
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
+
+		#[weight = SimpleDispatchInfo::default()]
 		fn unregister_seeder(origin) {
 			let account = ensure_signed(origin)?;
 			for dat_id in <UsersStorage<T>>::get(&account) {
@@ -826,37 +725,62 @@ decl_module!{
 			<UsersStorage<T>>::remove(account);
 		}
 
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
-		fn punish_seeder(origin, punished: T::AccountId) {
-			ensure_root(origin)?;
-
-			let user_tuple = <SelectedUserIndex<T>>::take(&punished);
-			match user_tuple.1 {
-				1 => <SelectedUsers<T>>::remove(user_tuple.0),
-				_ => {
-						<SelectedUserIndex<T>>::mutate(
-							&punished,
-							|tuple|{
-								let el1 = tuple.0.clone();
-								let el2 = tuple.1-1;
-								*tuple = (el1, el2);
-							});
-						()
-					},
-			};
-			/* disabled while punishment is determined
-			let inner_origin =
-			system::RawOrigin::Signed(punished.clone());
-			Self::unregister_seeder(inner_origin.into());
-			// todo: punish seeder.
-			*/
+		/*
+		fn on_initialize(n: T::BlockNumber) => Weight {
+			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
+			let challenge_index = <ChallengeIndex>::get();
+			let valid_users = <UsersCount>::get();
+			let valid_users_len = valid_users.len();
+			
+			match dat_vec.last() {
+				Some(last_index) => {
+			// if no one is currently selected to give proof, select someone if someone exists to select
+			if !<ChallengeMap>::contains_key(&challenge_index) && valid_users_len > 0 {
+				let nonce = <Nonce>::get();
+				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
+				.using_encoded(|mut b| u64::decode(&mut b))
+				.expect("hash must be of correct size; Qed");
+				let new_time_limit = new_random % last_index;
+				let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
+				let future_block = 
+					n + T::BlockNumber::from(challenge_length);
+				let selected_user = (new_random as usize % valid_users_len);
+				let random_user_index = valid_users.get(selected_user)
+					.expect("the remainder is always in bounds when % len");
+				let random_user = <Users<T>>::get(random_user_index);
+				let users_dats = <UsersStorage<T>>::get(&random_user);
+				let users_dats_len = users_dats.len();
+				let random_dat_id = users_dats.get(new_random as usize % users_dats_len)
+					.expect("the remainder is always in bounds when % len");
+				let random_dat = <DatKey>::get(random_dat_id);
+				let dat_tree_len = <TreeSize>::get(&random_dat);
+				let mut random_leave = 0;
+				if dat_tree_len != 0 { // avoid 0 divisor 
+					random_leave = new_random % dat_tree_len;
+				} 
+				let y : u64;
+				if <SelectedUserIndex<T>>::contains_key(&random_user) {
+					let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
+					<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
+					y = user_index;
+				} else {	
+					let user_index = <UserIndex>::get();
+					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
+					<UserIndex>::put(<UserIndex>::get() + 1);
+					y = user_index;
+				}
+				<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leave, future_block));
+				<SelectedUsers<T>>::insert(&y, &random_user);
+				<ChallengeMap>::insert(challenge_index, y);
+				<Nonce>::put(<Nonce>::get() + 1);
+				<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
+				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
+			}},
+				None => (),
+			}
+			SimpleDispatchInfo::default().weigh_data(())
 		}
-
-		#[weight = frame_support::weights::SimpleDispatchInfo::default()]
-		fn reward_seeder(origin, rewarded: T::AccountId) {
-			ensure_root(origin)?;
-			// todo: punish seeder.
-		}
+		*/
 
 		//TODO: this is probably bad and should probably go into an offchain worker
 		fn on_finalize(n: T::BlockNumber) {
@@ -864,13 +788,12 @@ decl_module!{
 				let user = <SelectedUsers<T>>::get(user_index);
 				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
 				let time = <SelectedChallenges<T>>::get(challenge_index).2;
-				let temporary_root = system::RawOrigin::Root;
 				let attesting = <ChallengeAttestors>::contains_key(challenge_index);
 				if (n == time) {
 					if attesting {
 						<SelectedChallenges<T>>::remove(challenge_index);
 						<ChallengeMap>::remove(challenge_index);
-						Self::punish_seeder(temporary_root.into(), user.clone());
+						Self::punish_seeder(user.clone());
 						Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
 					} else {
 						<ChallengeAttestors>::insert(challenge_index, Self::get_attestors_for(challenge_index));
@@ -878,7 +801,7 @@ decl_module!{
 					}
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
-						Self::force_clear_challenge(temporary_root.into(), user, challenge_index);
+						Self::clear_challenge(user, challenge_index);
 					}
 					//todo charge fee*
 				}
@@ -886,8 +809,6 @@ decl_module!{
 			}
 			<RemovedDats>::kill();
 		}
-
-		//end Module
 	}
 }
 
@@ -906,11 +827,97 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
+	fn clear_challenge(account: T::AccountId, challenge_index: u64){
+		let account_index = <ChallengeMap>::get(&challenge_index);
+			let (_, count) = <SelectedUserIndex<T>>::get(&account);
+			match count {
+				1 => {	
+					<SelectedUsers<T>>::remove(account_index);
+					<SelectedUserIndex<T>>::remove(account);
+				},
+				_ => <SelectedUserIndex<T>>::insert(account, (account_index, count-1))
+			}
+			<SelectedChallenges<T>>::remove(challenge_index);
+			<ChallengeMap>::remove(challenge_index);
+	}
+
+	fn punish_seeder(punished: T::AccountId) {
+		let user_tuple = <SelectedUserIndex<T>>::take(&punished);
+		match user_tuple.1 {
+			1 => <SelectedUsers<T>>::remove(user_tuple.0),
+			_ => {
+					<SelectedUserIndex<T>>::mutate(
+						&punished,
+						|tuple|{
+							let el1 = tuple.0.clone();
+							let el2 = tuple.1-1;
+							*tuple = (el1, el2);
+						});
+					()
+				},
+		};
+		/* disabled while punishment is determined
+		let inner_origin =
+		system::RawOrigin::Signed(punished.clone());
+		Self::unregister_seeder(inner_origin.into());
+		// todo: punish seeder.
+		*/
+	}
+
+
+	fn reward_seeder(rewarded: T::AccountId) {
+		//todo
+	}
+
+	fn forced_register_data(
+		account: T::AccountId,
+		merkle_root: (Public, RootHashPayload, H512)
+	)
+	{
+		let pubkey = merkle_root.0;
+		let sig = Signature::from_h512(merkle_root.2);
+		let mut lowest_free_index : DatIdIndex = 0;
+		let mut tree_size : u64 = u64::min_value();
+		let root_hash = merkle_root.1.hash(); //todo: do not calculate twice!
+		for child in merkle_root.1.children {
+			tree_size += child.total_length;
+		}
+		native::info!("{:#?}", tree_size);
+		let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
+		match <MerkleRoot>::contains_key(&pubkey){
+			true => (),
+			false => {
+				match dat_vec.first() {
+					Some(_) => {
+						dat_vec.sort_unstable();
+						lowest_free_index = dat_vec.remove(0);
+						dat_vec.push(lowest_free_index + 1);
+						dat_vec.sort_unstable();
+						dat_vec.dedup();
+					},
+					None => {
+						//add an element if the vec is empty
+						dat_vec.push(1);
+						lowest_free_index = 1;
+					},
+				}
+				//register new unknown dats
+				<DatKey>::insert(&lowest_free_index, &pubkey)
+			},
+		}
+		<MerkleRoot>::insert(&pubkey, (root_hash, sig));
+		<DatId>::put(dat_vec);
+		<TreeSize>::insert(&pubkey, tree_size);
+		<UserRequestsMap<T>>::insert(&pubkey, &account);
+		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
+	}
+
 	//borrowing from society pallet ---
 	fn pick_usize<'a, R: RngCore>(rng: &mut R, max: usize) -> usize {
 
 		(rng.next_u32() % (max as u32 + 1)) as usize
 	}
+
 	
 	/// Pick an item at pseudo-random from the slice, given the `rng`. `None` iff the slice is empty.
 	fn pick_item<'a, R: RngCore, E>(rng: &mut R, items: &'a [E]) -> Option<&'a E> {
