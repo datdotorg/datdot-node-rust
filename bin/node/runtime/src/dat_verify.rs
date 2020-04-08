@@ -30,6 +30,7 @@ use frame_support::{
 		Get,
 		Randomness,
 		ChangeMembers,
+		schedule::Named as ScheduleNamed,
 	},
 	weights::{
 		SimpleDispatchInfo,
@@ -91,6 +92,7 @@ pub trait Trait: system::Trait{
 	type ForceOrigin: EnsureOrigin<<Self as system::Trait>::Origin>;
 	type Proposal: Parameter + Dispatchable<Origin=Self::Origin>;
 	type AttestorsPerChallenge: Get<u32>;
+	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal>;
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]

@@ -540,6 +540,7 @@ impl dat_verify::Trait for Runtime {
 	type ForceOrigin = pallet_collective::EnsureMember<AccountId, CouncilCollective>;
 	type Proposal = Call;
 	type AttestorsPerChallenge = AttestorsPerChallenge;
+	type Scheduler = Scheduler;
 }
 
 parameter_types! {
