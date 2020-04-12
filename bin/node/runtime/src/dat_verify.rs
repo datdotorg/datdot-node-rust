@@ -350,7 +350,7 @@ decl_event!(
 		Challenge(AccountId, BlockNumber),
 		ChallengeFailed(AccountId, Vec<u8>),
 		NewPin(AccountId, Vec<u8>),
-		Attest(AccountId), //, Attestation), //dirty fix
+		Attest(AccountId, Attestation),
 		AttestPhase(bool, u64),
 	}
 );
@@ -597,7 +597,7 @@ decl_module!{
 					},
 					Err(_) => (),
 				}
-				Self::deposit_event(RawEvent::Attest(attestor)); //, attestation)); //dirty fix
+				Self::deposit_event(RawEvent::Attest(attestor, attestation));
 				break;
 				}
 			}
