@@ -78,9 +78,7 @@ use sp_runtime::{
 };
 use sp_io::hashing::blake2_256;
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
-
-pub type Public = ed25519::Public;
-pub type Signature = ed25519::Signature;
+use ed25519::{Public, Signature};
 
 /// The module's configuration trait.
 pub trait Trait: system::Trait{
@@ -347,12 +345,12 @@ decl_event!(
 	AccountId = <T as system::Trait>::AccountId,
 	BlockNumber = <T as system::Trait>::BlockNumber 
 	{
-		SomethingStored(DatIdIndex, Public),
-		SomethingUnstored(DatIdIndex, Public),
-		Challenge(AccountId,BlockNumber),
-		ChallengeFailed(AccountId, Public),
-		NewPin(AccountId, Public),
-		Attest(AccountId, Attestation),
+		SomethingStored(DatIdIndex, Vec<u8>),
+		SomethingUnstored(DatIdIndex, Vec<u8>),
+		Challenge(AccountId, BlockNumber),
+		ChallengeFailed(AccountId, Vec<u8>),
+		NewPin(AccountId, Vec<u8>),
+		Attest(AccountId), //, Attestation), //dirty fix
 		AttestPhase(bool, u64),
 	}
 );
@@ -542,7 +540,7 @@ decl_module!{
 			};
 			tmp.push(pubkey);
 			<RemovedDats>::put(tmp);
-			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
+			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey.to_vec()));
 		}
 
 
@@ -599,7 +597,7 @@ decl_module!{
 					},
 					Err(_) => (),
 				}
-				Self::deposit_event(RawEvent::Attest(attestor, attestation));
+				Self::deposit_event(RawEvent::Attest(attestor)); //, attestation)); //dirty fix
 				break;
 				}
 			}
@@ -683,7 +681,7 @@ decl_module!{
 				}
 				native::info!("NewPin; Account: {:#?}", account);
 				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
-				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey));
+				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey.to_vec()));
 				},
 				None => {
 					
@@ -796,7 +794,7 @@ decl_module!{
 						<SelectedChallenges<T>>::remove(challenge_index);
 						<ChallengeMap>::remove(challenge_index);
 						Self::punish_seeder(user.clone());
-						Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
+						Self::deposit_event(RawEvent::ChallengeFailed(user, dat.to_vec()));
 					} else {
 						<ChallengeAttestors>::insert(challenge_index, Self::get_attestors_for(challenge_index));
 						Self::deposit_event(RawEvent::AttestPhase(false, challenge_index));
@@ -911,7 +909,7 @@ impl<T: Trait> Module<T> {
 		<DatId>::put(dat_vec);
 		<TreeSize>::insert(&pubkey, tree_size);
 		<UserRequestsMap<T>>::insert(&pubkey, &account);
-		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
+		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey.to_vec()));
 	}
 
 	//borrowing from society pallet ---
