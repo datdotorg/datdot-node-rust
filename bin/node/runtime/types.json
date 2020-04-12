@@ -35,5 +35,6 @@
 	"DatIdIndex": "u64",
 	"DatIdVec": "Vec<DatIdIndex>",
 	"UserIdIndex": "u64",
-	"DatSize": "u64"
+	"DatSize": "u64",
+	"Public": "[u8; 32]"
 }
