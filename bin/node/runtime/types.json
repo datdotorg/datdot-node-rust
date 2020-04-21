@@ -32,6 +32,11 @@
 		"location": "u8",
 		"latency": "Option<u8>"
 	},
+	"ChallengeAttestations": {
+		"expected_attestors": "Vec<u64>",
+		"expected_friends": "Vec<u64>",
+		"completed": "Vec<(u64, Attestation)>"
+	},
 	"DatIdIndex": "u64",
 	"DatIdVec": "Vec<DatIdIndex>",
 	"UserIdIndex": "u64",

@@ -330,7 +330,7 @@ pub struct Attestation {
 pub struct ChallengeAttestations {
 	expected_attestors: Vec<u64>,
 	expected_friends: Vec<u64>,
-	seen: Vec<(u64, Attestation)>
+	completed: Vec<(u64, Attestation)>
 }
 
 type DatIdIndex = u64;
@@ -351,7 +351,7 @@ decl_event!(
 		ChallengeFailed(AccountId, Vec<u8>),
 		NewPin(AccountId, Vec<u8>),
 		Attest(AccountId, Attestation),
-		AttestPhase(bool, u64),
+		AttestPhase(u64, ChallengeAttestations),
 	}
 );
 
@@ -421,7 +421,7 @@ decl_storage! {
 		pub AttestorsCount: Vec<u64>;
 		// non-friend, randomly-selectable attestors.
 		pub ActiveAttestors: Vec<u64>;
-		// challenge => ([expected attestors], [rewarded friends], [seen attestations])
+		// challenge => ([expected attestors], [rewarded friends], [completed attestations])
 		pub ChallengeAttestors: map hasher(twox_64_concat) u64 => ChallengeAttestations;
 	}
 }
@@ -446,10 +446,14 @@ decl_module!{
 		//test things progressively, doing quicker computations first.
 		//gutted temporarily to demonstrate datdot flow.
 		//we should manually verify proof from raw bits.
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = SimpleDispatchInfo::FixedOperational(10000)] //todo weight
 		fn submit_proof(origin, challenge_index: u64, proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			// TODO - verify proof!
+
+			let challenge_attestors = Self::get_attestors_for(challenge_index);
+			<ChallengeAttestors>::insert(&challenge_index, &challenge_attestors);
+			Self::deposit_event(RawEvent::AttestPhase(challenge_index, challenge_attestors));
 			Self::clear_challenge(account, challenge_index);
 		}
 
@@ -586,14 +590,14 @@ decl_module!{
 				match challenge.expected_attestors.binary_search(&attestor_index) {
 					Ok(index) => {
 						challenge.expected_attestors.remove(index);
-						challenge.seen.push((attestor_index, attestation));
+						challenge.completed.push((attestor_index, attestation));
 					},
 					Err(_) => (),
 				}
 				match challenge.expected_friends.binary_search(&attestor_index) {
 					Ok(index) => {
 						challenge.expected_friends.remove(index);
-						challenge.seen.push((attestor_index, attestation));
+						challenge.completed.push((attestor_index, attestation));
 					},
 					Err(_) => (),
 				}
@@ -782,22 +786,61 @@ decl_module!{
 		}
 		*/
 
-		//TODO: this is probably bad and should probably go into an offchain worker
+		#[weight = SimpleDispatchInfo::FixedOperational(10000)] //todo weight
+		fn submit_challenge(origin, selected_user: u64, random_dat_id: u64){
+			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
+			match dat_vec.last() {
+			Some(last_index) => {
+			let challenge_index = <ChallengeIndex>::get();
+			let nonce = <Nonce>::get();
+			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
+				.using_encoded(|mut b| u64::decode(&mut b))
+				.expect("hash must be of correct size; Qed");
+			let new_time_limit = new_random % last_index;
+			let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
+			let future_block : T::BlockNumber =
+			<system::Module<T>>::block_number() + T::BlockNumber::from(challenge_length);
+			let random_dat = <DatKey>::get(random_dat_id);
+			let dat_tree_len = <TreeSize>::get(&random_dat);
+			let mut random_leaf = 0;
+			if dat_tree_len != 0 { // avoid 0 divisor 
+				random_leaf = new_random % dat_tree_len;
+			} 
+			let y : u64;
+			let selected_user_key = <Users<T>>::get(&selected_user);
+			if <SelectedUserIndex<T>>::contains_key(&selected_user_key) {
+				let (user_index, count) = <SelectedUserIndex<T>>::get(&selected_user_key);
+				<SelectedUserIndex<T>>::insert(&selected_user_key, (user_index, count+1));
+				y = user_index;
+			} else {	
+				let user_index = <UserIndex>::get();
+				<SelectedUserIndex<T>>::insert(&selected_user_key, (user_index, 1));
+				<UserIndex>::put(<UserIndex>::get() + 1);
+				y = user_index;
+			}
+			<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leaf, future_block));
+			<SelectedUsers<T>>::insert(&y, &selected_user_key);
+			<ChallengeMap>::insert(challenge_index, y);
+			<Nonce>::put(<Nonce>::get() + 1);
+			<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
+			//Self::deposit_event(RawEvent::Challenge(&selected_user_key, &future_block));
+			},
+				None => (),
+			}
+		}
+
 		fn on_finalize(n: T::BlockNumber) {
 			for (challenge_index, user_index) in <ChallengeMap>::iter() {
 				let user = <SelectedUsers<T>>::get(user_index);
 				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
-				let time = <SelectedChallenges<T>>::get(challenge_index).2;
+				let deadline = <SelectedChallenges<T>>::get(challenge_index).2;
 				let attesting = <ChallengeAttestors>::contains_key(challenge_index);
-				if (n == time) {
-					if attesting {
+				if (n == deadline) {
+					if !attesting {
 						<SelectedChallenges<T>>::remove(challenge_index);
 						<ChallengeMap>::remove(challenge_index);
 						Self::punish_seeder(user.clone());
 						Self::deposit_event(RawEvent::ChallengeFailed(user, dat.to_vec()));
-					} else {
-						<ChallengeAttestors>::insert(challenge_index, Self::get_attestors_for(challenge_index));
-						Self::deposit_event(RawEvent::AttestPhase(false, challenge_index));
 					}
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
@@ -822,7 +865,7 @@ impl<T: Trait> Module<T> {
 			return ChallengeAttestations {
 				expected_attestors: Self::get_random_attestors(),
 				expected_friends: attestors.expected_friends,
-				seen: attestors.seen,
+				completed: attestors.completed,
 			}
 		}
 	}
