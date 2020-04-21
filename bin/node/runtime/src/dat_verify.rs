@@ -823,7 +823,7 @@ decl_module!{
 			<ChallengeMap>::insert(challenge_index, y);
 			<Nonce>::put(<Nonce>::get() + 1);
 			<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
-			//Self::deposit_event(RawEvent::Challenge(&selected_user_key, &future_block));
+			Self::deposit_event(RawEvent::Challenge(selected_user_key, future_block));
 			},
 				None => (),
 			}
