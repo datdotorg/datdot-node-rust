@@ -15,11 +15,16 @@
 // along with Substrate.  If not, see <http://www.gnu.org/licenses/>.
 
 use crate::{
-	config::Role,
-	debug_info, discovery::DiscoveryBehaviour, discovery::DiscoveryOut,
+	config::{ProtocolId, Role},
+	debug_info, discovery::{DiscoveryBehaviour, DiscoveryConfig, DiscoveryOut},
 	Event, ObservedRole, DhtEvent, ExHashT,
 };
-use crate::protocol::{self, light_client_handler, message::Roles, CustomMessageOutcome, Protocol};
+use crate::protocol::{
+	self, block_requests, light_client_handler, finality_requests,
+	message::{self, Roles}, CustomMessageOutcome, Protocol
+};
+
+use codec::Encode as _;
 use libp2p::NetworkBehaviour;
 use libp2p::core::{Multiaddr, PeerId, PublicKey};
 use libp2p::kad::record;
@@ -43,6 +48,8 @@ pub struct Behaviour<B: BlockT, H: ExHashT> {
 	discovery: DiscoveryBehaviour,
 	/// Block request handling.
 	block_requests: protocol::BlockRequests<B>,
+	/// Finality proof request handling.
+	finality_proof_requests: protocol::FinalityProofRequests<B>,
 	/// Light client request handling.
 	light_client_handler: protocol::LightClientHandler<B>,
 
@@ -61,35 +68,28 @@ pub enum BehaviourOut<B: BlockT> {
 	JustificationImport(Origin, B::Hash, NumberFor<B>, Justification),
 	FinalityProofImport(Origin, B::Hash, NumberFor<B>, Vec<u8>),
 	/// Started a random Kademlia discovery query.
-	RandomKademliaStarted,
+	RandomKademliaStarted(ProtocolId),
 	Event(Event),
 }
 
 impl<B: BlockT, H: ExHashT> Behaviour<B, H> {
 	/// Builds a new `Behaviour`.
-	pub async fn new(
+	pub fn new(
 		substrate: Protocol<B, H>,
 		role: Role,
 		user_agent: String,
 		local_public_key: PublicKey,
-		known_addresses: Vec<(PeerId, Multiaddr)>,
-		enable_mdns: bool,
-		allow_private_ipv4: bool,
-		discovery_only_if_under_num: u64,
 		block_requests: protocol::BlockRequests<B>,
+		finality_proof_requests: protocol::FinalityProofRequests<B>,
 		light_client_handler: protocol::LightClientHandler<B>,
+		disco_config: DiscoveryConfig,
 	) -> Self {
 		Behaviour {
 			substrate,
 			debug_info: debug_info::DebugInfoBehaviour::new(user_agent, local_public_key.clone()),
-			discovery: DiscoveryBehaviour::new(
-				local_public_key,
-				known_addresses,
-				enable_mdns,
-				allow_private_ipv4,
-				discovery_only_if_under_num,
-			).await,
+			discovery: disco_config.finish(),
 			block_requests,
+			finality_proof_requests,
 			light_client_handler,
 			events: Vec::new(),
 			role,
@@ -107,8 +107,18 @@ impl<B: BlockT, H: ExHashT> Behaviour<B, H> {
 	}
 
 	/// Returns the number of nodes that are in the Kademlia k-buckets.
-	pub fn num_kbuckets_entries(&mut self) -> usize {
+	pub fn num_kbuckets_entries(&mut self) -> impl ExactSizeIterator<Item = (&ProtocolId, usize)> {
 		self.discovery.num_kbuckets_entries()
+	}
+
+	/// Returns the number of records in the Kademlia record stores.
+	pub fn num_kademlia_records(&mut self) -> impl ExactSizeIterator<Item = (&ProtocolId, usize)> {
+		self.discovery.num_kademlia_records()
+	}
+
+	/// Returns the total size in bytes of all the records in the Kademlia record stores.
+	pub fn kademlia_records_total_size(&mut self) -> impl ExactSizeIterator<Item = (&ProtocolId, usize)> {
+		self.discovery.kademlia_records_total_size()
 	}
 
 	/// Borrows `self` and returns a struct giving access to the information about a node.
@@ -134,7 +144,11 @@ impl<B: BlockT, H: ExHashT> Behaviour<B, H> {
 		engine_id: ConsensusEngineId,
 		protocol_name: impl Into<Cow<'static, [u8]>>,
 	) {
-		let list = self.substrate.register_notifications_protocol(engine_id, protocol_name);
+		// This is the message that we will send to the remote as part of the initial handshake.
+		// At the moment, we force this to be an encoded `Roles`.
+		let handshake_message = Roles::from(&self.role).encode();
+
+		let list = self.substrate.register_notifications_protocol(engine_id, protocol_name, handshake_message);
 		for (remote, roles) in list {
 			let role = reported_roles_to_observed_role(&self.role, remote, roles);
 			let ev = Event::NotificationStreamOpened {
@@ -205,6 +219,12 @@ Behaviour<B, H> {
 				self.events.push(BehaviourOut::JustificationImport(origin, hash, nb, justification)),
 			CustomMessageOutcome::FinalityProofImport(origin, hash, nb, proof) =>
 				self.events.push(BehaviourOut::FinalityProofImport(origin, hash, nb, proof)),
+			CustomMessageOutcome::BlockRequest { target, request } => {
+				self.block_requests.send_request(&target, request);
+			},
+			CustomMessageOutcome::FinalityProofRequest { target, block_hash, request } => {
+				self.finality_proof_requests.send_request(&target, block_hash, request);
+			},
 			CustomMessageOutcome::NotificationStreamOpened { remote, protocols, roles } => {
 				let role = reported_roles_to_observed_role(&self.role, &remote, roles);
 				for engine_id in protocols {
@@ -230,6 +250,37 @@ Behaviour<B, H> {
 				self.light_client_handler.update_best_block(&peer_id, number);
 			}
 			CustomMessageOutcome::None => {}
+		}
+	}
+}
+
+impl<B: BlockT, H: ExHashT> NetworkBehaviourEventProcess<block_requests::Event<B>> for Behaviour<B, H> {
+	fn inject_event(&mut self, event: block_requests::Event<B>) {
+		match event {
+			block_requests::Event::Response { peer, original_request, response } => {
+				let ev = self.substrate.on_block_response(peer, original_request, response);
+				self.inject_event(ev);
+			}
+		}
+	}
+}
+
+impl<B: BlockT, H: ExHashT> NetworkBehaviourEventProcess<finality_requests::Event<B>> for Behaviour<B, H> {
+	fn inject_event(&mut self, event: finality_requests::Event<B>) {
+		match event {
+			finality_requests::Event::Response { peer, block_hash, proof } => {
+				let response = message::FinalityProofResponse {
+					id: 0,
+					block: block_hash,
+					proof: if !proof.is_empty() {
+						Some(proof)
+					} else {
+						None
+					},
+				};
+				let ev = self.substrate.on_finality_proof_response(peer, response);
+				self.inject_event(ev);
+			}
 		}
 	}
 }
@@ -277,8 +328,10 @@ impl<B: BlockT, H: ExHashT> NetworkBehaviourEventProcess<DiscoveryOut>
 			DiscoveryOut::ValuePutFailed(key) => {
 				self.events.push(BehaviourOut::Event(Event::Dht(DhtEvent::ValuePutFailed(key))));
 			}
-			DiscoveryOut::RandomKademliaStarted => {
-				self.events.push(BehaviourOut::RandomKademliaStarted);
+			DiscoveryOut::RandomKademliaStarted(protocols) => {
+				for protocol in protocols {
+					self.events.push(BehaviourOut::RandomKademliaStarted(protocol));
+				}
 			}
 		}
 	}

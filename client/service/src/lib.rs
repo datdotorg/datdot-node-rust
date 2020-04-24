@@ -29,7 +29,7 @@ mod builder;
 mod status_sinks;
 mod task_manager;
 
-use std::{borrow::Cow, io, pin::Pin};
+use std::{io, pin::Pin};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::collections::HashMap;
@@ -74,7 +74,7 @@ pub use std::{ops::Deref, result::Result, sync::Arc};
 #[doc(hidden)]
 pub use sc_network::config::{FinalityProofProvider, OnDemand, BoxFinalityProofRequestBuilder};
 pub use sc_tracing::TracingReceiver;
-pub use task_manager::{TaskManagerBuilder, SpawnTaskHandle};
+pub use task_manager::SpawnTaskHandle;
 use task_manager::TaskManager;
 
 const DEFAULT_PROTOCOL_ID: &str = "sup";
@@ -139,12 +139,18 @@ pub trait AbstractService: 'static + Future<Output = Result<(), Error>> +
 	fn telemetry(&self) -> Option<sc_telemetry::Telemetry>;
 
 	/// Spawns a task in the background that runs the future passed as parameter.
-	fn spawn_task(&self, name: impl Into<Cow<'static, str>>, task: impl Future<Output = ()> + Send + 'static);
+	///
+	/// Information about this task will be reported to Prometheus.
+	///
+	/// The task name is a `&'static str` as opposed to a `String`. The reason for that is that
+	/// in order to avoid memory consumption issues with the Prometheus metrics, the set of
+	/// possible task names has to be bounded.
+	fn spawn_task(&self, name: &'static str, task: impl Future<Output = ()> + Send + 'static);
 
 	/// Spawns a task in the background that runs the future passed as
 	/// parameter. The given task is considered essential, i.e. if it errors we
 	/// trigger a service exit.
-	fn spawn_essential_task(&self, name: impl Into<Cow<'static, str>>, task: impl Future<Output = ()> + Send + 'static);
+	fn spawn_essential_task(&self, name: &'static str, task: impl Future<Output = ()> + Send + 'static);
 
 	/// Returns a handle for spawning tasks.
 	fn spawn_task_handle(&self) -> SpawnTaskHandle;
@@ -220,11 +226,11 @@ where
 		self.keystore.clone()
 	}
 
-	fn spawn_task(&self, name: impl Into<Cow<'static, str>>, task: impl Future<Output = ()> + Send + 'static) {
+	fn spawn_task(&self, name: &'static str, task: impl Future<Output = ()> + Send + 'static) {
 		self.task_manager.spawn(name, task)
 	}
 
-	fn spawn_essential_task(&self, name: impl Into<Cow<'static, str>>, task: impl Future<Output = ()> + Send + 'static) {
+	fn spawn_essential_task(&self, name: &'static str, task: impl Future<Output = ()> + Send + 'static) {
 		let mut essential_failed = self.essential_failed_tx.clone();
 		let essential_task = std::panic::AssertUnwindSafe(task)
 			.catch_unwind()
@@ -298,8 +304,6 @@ impl<TBl, TCl, TSc, TNetStatus, TNet, TTxPool, TOc> Future for
 			}
 		}
 
-		this.task_manager.process_receiver(cx);
-
 		// The service future never ends.
 		Poll::Pending
 	}
@@ -312,8 +316,8 @@ impl<TBl, TCl, TSc, TNetStatus, TNet, TTxPool, TOc> Spawn for
 		&self,
 		future: FutureObj<'static, ()>
 	) -> Result<(), SpawnError> {
-		self.task_manager.scheduler().unbounded_send((Box::pin(future), From::from("unnamed")))
-			.map_err(|_| SpawnError::shutdown())
+		self.task_manager.spawn_handle().spawn("unnamed", future);
+		Ok(())
 	}
 }
 
@@ -366,6 +370,17 @@ fn build_network_future<
 						is_syncing: network.service().is_major_syncing(),
 						should_have_peers,
 					});
+				},
+				sc_rpc::system::Request::LocalPeerId(sender) => {
+					let _ = sender.send(network.local_peer_id().to_base58());
+				},
+				sc_rpc::system::Request::LocalListenAddresses(sender) => {
+					let peer_id = network.local_peer_id().clone().into();
+					let p2p_proto_suffix = sc_network::multiaddr::Protocol::P2p(peer_id);
+					let addresses = network.listen_addresses()
+						.map(|addr| addr.clone().with(p2p_proto_suffix.clone()).to_string())
+						.collect();
+					let _ = sender.send(addresses);
 				},
 				sc_rpc::system::Request::Peers(sender) => {
 					let _ = sender.send(network.peers_debug_info().into_iter().map(|(peer_id, p)|
@@ -494,7 +509,7 @@ mod waiting {
 
 /// Starts RPC servers that run in their own thread, and returns an opaque object that keeps them alive.
 #[cfg(not(target_os = "unknown"))]
-fn start_rpc_servers<H: FnMut() -> sc_rpc_server::RpcHandler<sc_rpc::Metadata>>(
+fn start_rpc_servers<H: FnMut(sc_rpc::DenyUnsafe) -> sc_rpc_server::RpcHandler<sc_rpc::Metadata>>(
 	config: &Configuration,
 	mut gen_handler: H
 ) -> Result<Box<dyn std::any::Any + Send + Sync>, error::Error> {
@@ -516,10 +531,23 @@ fn start_rpc_servers<H: FnMut() -> sc_rpc_server::RpcHandler<sc_rpc::Metadata>>(
 		})
 	}
 
+	fn deny_unsafe(addr: &Option<SocketAddr>, unsafe_rpc_expose: bool) -> sc_rpc::DenyUnsafe {
+		let is_exposed_addr = addr.map(|x| x.ip().is_loopback()).unwrap_or(false);
+		if is_exposed_addr && !unsafe_rpc_expose {
+			sc_rpc::DenyUnsafe::Yes
+		} else {
+			sc_rpc::DenyUnsafe::No
+		}
+	}
+
 	Ok(Box::new((
 		maybe_start_server(
 			config.rpc_http,
-			|address| sc_rpc_server::start_http(address, config.rpc_cors.as_ref(), gen_handler()),
+			|address| sc_rpc_server::start_http(
+				address,
+				config.rpc_cors.as_ref(),
+				gen_handler(deny_unsafe(&config.rpc_http, config.unsafe_rpc_expose)),
+			),
 		)?.map(|s| waiting::HttpServer(Some(s))),
 		maybe_start_server(
 			config.rpc_ws,
@@ -527,15 +555,15 @@ fn start_rpc_servers<H: FnMut() -> sc_rpc_server::RpcHandler<sc_rpc::Metadata>>(
 				address,
 				config.rpc_ws_max_connections,
 				config.rpc_cors.as_ref(),
-				gen_handler(),
+				gen_handler(deny_unsafe(&config.rpc_ws, config.unsafe_rpc_expose)),
 			),
-		)?.map(|s| waiting::WsServer(Some(s))).map(Mutex::new),
+		)?.map(|s| waiting::WsServer(Some(s))),
 	)))
 }
 
 /// Starts RPC servers that run in their own thread, and returns an opaque object that keeps them alive.
 #[cfg(target_os = "unknown")]
-fn start_rpc_servers<H: FnMut() -> sc_rpc_server::RpcHandler<sc_rpc::Metadata>>(
+fn start_rpc_servers<H: FnMut(sc_rpc::DenyUnsafe) -> sc_rpc_server::RpcHandler<sc_rpc::Metadata>>(
 	_: &Configuration,
 	_: H
 ) -> Result<Box<dyn std::any::Any + Send + Sync>, error::Error> {
@@ -679,6 +707,7 @@ mod tests {
 		let pool = Arc::new(BasicPool::new(
 			Default::default(),
 			Arc::new(FullChainApi::new(client.clone())),
+			None,
 		).0);
 		let source = sp_runtime::transaction_validity::TransactionSource::External;
 		let best = longest_chain.best_chain().unwrap();

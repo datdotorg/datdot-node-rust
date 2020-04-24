@@ -33,8 +33,10 @@ use frame_support::{
 		schedule::Named as ScheduleNamed,
 	},
 	weights::{
-		SimpleDispatchInfo,
 		Weight,
+		DispatchClass::{
+			Operational,
+		}
 	},
 };
 use sp_std::convert::{
@@ -383,18 +385,18 @@ decl_error! {
 decl_storage! {
 	trait Store for Module<T: Trait> as DatVerify {
 		// A vec of free indeces, with the last item usable for `len`
-		pub DatId get(next_id): DatIdVec;
+		pub DatId get(fn next_id): DatIdVec;
 		// Each dat archive has a public key
-		pub DatKey get(public_key): map hasher(twox_64_concat) DatIdIndex => Public;
+		pub DatKey get(fn public_key): map hasher(twox_64_concat) DatIdIndex => Public;
 		// Each dat archive has a tree size
 		// TODO: remove calls to this when expecting indeces
-		pub TreeSize get(tree_size): map hasher(twox_64_concat) Public => DatSize;
+		pub TreeSize get(fn tree_size): map hasher(twox_64_concat) Public => DatSize;
 		// each dat archive has a merkle root
-		pub MerkleRoot get(merkle_root): map hasher(twox_64_concat) Public => (H256, Signature);
+		pub MerkleRoot get(fn merkle_root): map hasher(twox_64_concat) Public => (H256, Signature);
 		// vec of occupied user indeces for when users are removed.
 		pub UsersCount: Vec<u64>;
 		// users are put into an "array"
-		pub Users get(user): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
+		pub Users get(fn user): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
 		// each user has a vec of dats they seed
 		pub UsersStorage: map hasher(twox_64_concat) T::AccountId => Vec<DatIdIndex>;
 		// each dat has a vec of users pinning it
@@ -416,7 +418,7 @@ decl_storage! {
 		pub Nonce: u64;
 
 		// all attestors
-		pub Attestors get(atts): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
+		pub Attestors get(fn atts): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
 		// vec of occupied attestor indeces for when attestors are removed.
 		pub AttestorsCount: Vec<u64>;
 		// non-friend, randomly-selectable attestors.
@@ -433,7 +435,7 @@ decl_module!{
 		fn deposit_event() = default;
 		const AttestorsPerChallenge: u32 = T::AttestorsPerChallenge::get();
 
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000] //todo weight
 		fn force_clear_challenge(origin, account: T::AccountId, challenge_index: u64){
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
@@ -446,7 +448,7 @@ decl_module!{
 		//test things progressively, doing quicker computations first.
 		//gutted temporarily to demonstrate datdot flow.
 		//we should manually verify proof from raw bits.
-		#[weight = SimpleDispatchInfo::FixedOperational(10000)] //todo weight
+		#[weight = (10000, Operational)] //todo weight
 		fn submit_proof(origin, challenge_index: u64, proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			// TODO - verify proof!
@@ -459,7 +461,7 @@ decl_module!{
 
 
 		/// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn register_data(origin, merkle_root: (Public, RootHashPayload, H512)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
@@ -485,7 +487,7 @@ decl_module!{
 		}
 
 		//debug method when you don't have valid data for register_data, no validity checks, only root.
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
@@ -499,7 +501,7 @@ decl_module!{
 		}
 
 		//user stops requesting others pin their data
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn unregister_data(origin, index: DatIdIndex){
 			let account = ensure_signed(origin)?;
 			let pubkey = <DatKey>::get(index);
@@ -548,7 +550,7 @@ decl_module!{
 		}
 
 
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn register_attestor(origin){
 			let account = ensure_signed(origin)?;
 			let mut att_count = <AttestorsCount>::get();
@@ -579,7 +581,7 @@ decl_module!{
 			}
 		}
 
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn submit_attestation(origin, challenge_index: u64, attestation: Attestation) {
 			let attestor = ensure_signed(origin)?;
 			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
@@ -607,7 +609,7 @@ decl_module!{
 			}
 		}
 
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn unregister_attestor(origin){
 			let account = ensure_signed(origin)?;
 			for (user_index, user_account) in <Attestors<T>>::iter(){
@@ -641,7 +643,7 @@ decl_module!{
 
 		
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn register_seeder(origin) {
 			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
@@ -684,7 +686,7 @@ decl_module!{
 					}
 				}
 				native::info!("NewPin; Account: {:#?}", account);
-				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
+				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey.to_vec());
 				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey.to_vec()));
 				},
 				None => {
@@ -694,7 +696,7 @@ decl_module!{
 		} 
 
 
-		#[weight = SimpleDispatchInfo::default()]
+		#[weight = 10000]
 		fn unregister_seeder(origin) {
 			let account = ensure_signed(origin)?;
 			for dat_id in <UsersStorage<T>>::get(&account) {
@@ -782,12 +784,12 @@ decl_module!{
 			}},
 				None => (),
 			}
-			SimpleDispatchInfo::default().weigh_data(())
+			10000.weigh_data(())
 		}
 		*/
 
-		#[weight = SimpleDispatchInfo::FixedOperational(10000)] //todo weight
-		fn submit_challenge(origin, selected_user: u64, random_dat_id: u64){
+		#[weight = (10000, Operational)] //todo weight
+		fn submit_challenge(origin, selected_user: u64, dat_id: u64){
 			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
 			match dat_vec.last() {
 			Some(last_index) => {
@@ -800,8 +802,8 @@ decl_module!{
 			let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
 			let future_block : T::BlockNumber =
 			<system::Module<T>>::block_number() + T::BlockNumber::from(challenge_length);
-			let random_dat = <DatKey>::get(random_dat_id);
-			let dat_tree_len = <TreeSize>::get(&random_dat);
+			let dat_pubkey = <DatKey>::get(dat_id);
+			let dat_tree_len = <TreeSize>::get(&dat_pubkey);
 			let mut random_leaf = 0;
 			if dat_tree_len != 0 { // avoid 0 divisor 
 				random_leaf = new_random % dat_tree_len;
@@ -818,7 +820,7 @@ decl_module!{
 				<UserIndex>::put(<UserIndex>::get() + 1);
 				y = user_index;
 			}
-			<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leaf, future_block));
+			<SelectedChallenges<T>>::insert(&challenge_index, (dat_pubkey, random_leaf, future_block));
 			<SelectedUsers<T>>::insert(&y, &selected_user_key);
 			<ChallengeMap>::insert(challenge_index, y);
 			<Nonce>::put(<Nonce>::get() + 1);
