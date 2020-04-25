@@ -347,11 +347,11 @@ decl_event!(
 	AccountId = <T as system::Trait>::AccountId,
 	BlockNumber = <T as system::Trait>::BlockNumber 
 	{
-		SomethingStored(DatIdIndex, Vec<u8>),
-		SomethingUnstored(DatIdIndex, Vec<u8>),
+		SomethingStored(DatIdIndex, Public),
+		SomethingUnstored(DatIdIndex, Public),
 		Challenge(AccountId, BlockNumber),
-		ChallengeFailed(AccountId, Vec<u8>),
-		NewPin(AccountId, Vec<u8>),
+		ChallengeFailed(AccountId, Public),
+		NewPin(AccountId, Public),
 		Attest(AccountId, Attestation),
 		AttestPhase(u64, ChallengeAttestations),
 	}
@@ -546,7 +546,7 @@ decl_module!{
 			};
 			tmp.push(pubkey);
 			<RemovedDats>::put(tmp);
-			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey.to_vec()));
+			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
 		}
 
 
@@ -686,8 +686,8 @@ decl_module!{
 					}
 				}
 				native::info!("NewPin; Account: {:#?}", account);
-				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey.to_vec());
-				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey.to_vec()));
+				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
+				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey));
 				},
 				None => {
 					
@@ -834,15 +834,18 @@ decl_module!{
 		fn on_finalize(n: T::BlockNumber) {
 			for (challenge_index, user_index) in <ChallengeMap>::iter() {
 				let user = <SelectedUsers<T>>::get(user_index);
-				let dat = <SelectedChallenges<T>>::get(challenge_index).0;
-				let deadline = <SelectedChallenges<T>>::get(challenge_index).2;
+				let challenge = <SelectedChallenges<T>>::get(challenge_index);
+				let dat = challenge.0;
+				native::info!("OnFinalize; Challenge: {:#?}", challenge);
+				native::info!("OnFinalize; Dat: {:#?}", dat);
+				let deadline = challenge.2;
 				let attesting = <ChallengeAttestors>::contains_key(challenge_index);
 				if (n == deadline) {
 					if !attesting {
 						<SelectedChallenges<T>>::remove(challenge_index);
 						<ChallengeMap>::remove(challenge_index);
 						Self::punish_seeder(user.clone());
-						Self::deposit_event(RawEvent::ChallengeFailed(user, dat.to_vec()));
+						Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
 					}
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
@@ -932,10 +935,14 @@ impl<T: Trait> Module<T> {
 		match <MerkleRoot>::contains_key(&pubkey){
 			true => (),
 			false => {
-				match dat_vec.first() {
-					Some(_) => {
+				native::info!("Dat Keys Vec: {:#?}", dat_vec);
+				match dat_vec.pop() {
+					Some(x) => {
 						dat_vec.sort_unstable();
-						lowest_free_index = dat_vec.remove(0);
+						let lowest_free_index = x;
+						//currently only getting highest free index
+						//but if we actually get lowest, do not push
+						//new lowest on top of dat_vec
 						dat_vec.push(lowest_free_index + 1);
 						dat_vec.sort_unstable();
 						dat_vec.dedup();
@@ -947,14 +954,14 @@ impl<T: Trait> Module<T> {
 					},
 				}
 				//register new unknown dats
-				<DatKey>::insert(&lowest_free_index, &pubkey)
+				<DatKey>::insert(&lowest_free_index-1, &pubkey)
 			},
 		}
 		<MerkleRoot>::insert(&pubkey, (root_hash, sig));
 		<DatId>::put(dat_vec);
 		<TreeSize>::insert(&pubkey, tree_size);
 		<UserRequestsMap<T>>::insert(&pubkey, &account);
-		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey.to_vec()));
+		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index-1, pubkey));
 	}
 
 	//borrowing from society pallet ---
