@@ -351,7 +351,7 @@ decl_event!(
 		SomethingUnstored(DatIdIndex, Public),
 		Challenge(AccountId, BlockNumber),
 		ChallengeFailed(AccountId, Public),
-		NewPin(AccountId, Public),
+		NewPin(u64, u64),
 		Attest(AccountId, Attestation),
 		AttestPhase(u64, ChallengeAttestations),
 	}
@@ -669,25 +669,28 @@ decl_module!{
 				<DatHosters<T>>::insert(&dat_pubkey, &dat_hosters);
 				<UsersStorage<T>>::insert(&account, &current_user_dats);
 				<Nonce>::mutate(|m| *m += 1);
+				let user_index;
 				if(current_user_dats.len() == 1){
 					let user_index_option = <UsersCount>::get().pop();
 					let current_user_index = match user_index_option {
-						Some(x) => x,
+						Some(x) => {
+							x
+						},
 						None => 0,
 					};
-					match current_user_index.checked_add(1){
-						Some(i) => {
-							<Users<T>>::insert(&i, &account);
-							let mut users = <UsersCount>::get();
-							users.push(i);
-							<UsersCount>::put(users);
-						},
-						None => (),
-					}
+					user_index = current_user_index.saturating_add(1);
+					let mut users = <UsersCount>::get();
+					users.push(user_index);
+					<UsersCount>::put(users);
+				} else {
+					let user_option = <Users<T>>::iter().find(|(_, x)| *x == account);
+					ensure!(user_option.is_some(), Error::<T>::InvalidState);
+					user_index = user_option.unwrap().0;
 				}
+				<Users<T>>::insert(&user_index, &account);
 				native::info!("NewPin; Account: {:#?}", account);
 				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
-				Self::deposit_event(RawEvent::NewPin(account, dat_pubkey));
+				Self::deposit_event(RawEvent::NewPin(user_index, random_index));
 				},
 				None => {
 					
