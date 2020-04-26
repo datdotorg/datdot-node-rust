@@ -69,7 +69,7 @@ pub mod constants;
 use constants::{time::*, currency::*};
 
 // Datdot modules.
-mod dat_verify;
+use pallet_datdot as dat_verify;
 
 // Make the WASM binary available.
 #[cfg(feature = "std")]

@@ -5,9 +5,9 @@ join our [telegram](https://t.me/joinchat/CgTftxXJvp6iYayqDjP7lQ) or [gitter](ht
 
 ![](https://i.imgur.com/oGPIbZQ.jpg)
 
-datdot code is currently located in `bin/node`
+datdot code is currently located in `pallet-datdot`.
 
-currently datdot modules and runtime are "spliced" into the default substrate node cli - with custom governance, and most unneeded features removed. After the runtime module has a stable api, the scaffolding will be reduced and this repo will consist of a minimal test node and FRAME pallet.
+the default substrate node cli is modified - with custom governance, and most unneeded features removed, but `pallet-datdot` added. After substrate stabilizes at version 2.0.0, the scaffolding will be reduced and this repo will consist of a minimal test node and FRAME pallet.
 
 ### Building
 

@@ -353,11 +353,6 @@ fn full_native_block_import_works() {
 			},
 			EventRecord {
 				phase: Phase::ApplyExtrinsic(1),
-				event: Event::pallet_treasury(pallet_treasury::RawEvent::Deposit(fees * 8 / 10)),
-				topics: vec![],
-			},
-			EventRecord {
-				phase: Phase::ApplyExtrinsic(1),
 				event: Event::frame_system(frame_system::RawEvent::ExtrinsicSuccess(
 					DispatchInfo { weight: 460_000_000, ..Default::default() }
 				)),
@@ -408,11 +403,6 @@ fn full_native_block_import_works() {
 			},
 			EventRecord {
 				phase: Phase::ApplyExtrinsic(1),
-				event: Event::pallet_treasury(pallet_treasury::RawEvent::Deposit(fees * 8 / 10)),
-				topics: vec![],
-			},
-			EventRecord {
-				phase: Phase::ApplyExtrinsic(1),
 				event: Event::frame_system(frame_system::RawEvent::ExtrinsicSuccess(
 					DispatchInfo { weight: 460_000_000, ..Default::default() }
 				)),
@@ -427,11 +417,6 @@ fn full_native_block_import_works() {
 						15 * DOLLARS,
 					)
 				),
-				topics: vec![],
-			},
-			EventRecord {
-				phase: Phase::ApplyExtrinsic(2),
-				event: Event::pallet_treasury(pallet_treasury::RawEvent::Deposit(fees * 8 / 10)),
 				topics: vec![],
 			},
 			EventRecord {
@@ -487,171 +472,6 @@ fn full_wasm_block_import_works() {
 		assert_eq!(
 			Balances::total_balance(&bob()),
 			179 * DOLLARS - 1 * transfer_fee(&xt(), fm),
-		);
-	});
-}
-
-const CODE_TRANSFER: &str = r#"
-(module
-;; ext_call(
-;;    callee_ptr: u32,
-;;    callee_len: u32,
-;;    gas: u64,
-;;    value_ptr: u32,
-;;    value_len: u32,
-;;    input_data_ptr: u32,
-;;    input_data_len: u32
-;; ) -> u32
-(import "env" "ext_call" (func $ext_call (param i32 i32 i64 i32 i32 i32 i32) (result i32)))
-(import "env" "ext_scratch_size" (func $ext_scratch_size (result i32)))
-(import "env" "ext_scratch_read" (func $ext_scratch_read (param i32 i32 i32)))
-(import "env" "memory" (memory 1 1))
-(func (export "deploy")
-)
-(func (export "call")
-	(block $fail
-		;; load and check the input data (which is stored in the scratch buffer).
-		;; fail if the input size is not != 4
-		(br_if $fail
-			(i32.ne
-				(i32.const 4)
-				(call $ext_scratch_size)
-			)
-		)
-
-		(call $ext_scratch_read
-			(i32.const 0)
-			(i32.const 0)
-			(i32.const 4)
-		)
-
-
-		(br_if $fail
-			(i32.ne
-				(i32.load8_u (i32.const 0))
-				(i32.const 0)
-			)
-		)
-		(br_if $fail
-			(i32.ne
-				(i32.load8_u (i32.const 1))
-				(i32.const 1)
-			)
-		)
-		(br_if $fail
-			(i32.ne
-				(i32.load8_u (i32.const 2))
-				(i32.const 2)
-			)
-		)
-		(br_if $fail
-			(i32.ne
-				(i32.load8_u (i32.const 3))
-				(i32.const 3)
-			)
-		)
-
-		(drop
-			(call $ext_call
-				(i32.const 4)  ;; Pointer to "callee" address.
-				(i32.const 32)  ;; Length of "callee" address.
-				(i64.const 0)  ;; How much gas to devote for the execution. 0 = all.
-				(i32.const 36)  ;; Pointer to the buffer with value to transfer
-				(i32.const 16)   ;; Length of the buffer with value to transfer.
-				(i32.const 0)   ;; Pointer to input data buffer address
-				(i32.const 0)   ;; Length of input data buffer
-			)
-		)
-
-		(return)
-	)
-	unreachable
-)
-;; Destination AccountId to transfer the funds.
-;; Represented by H256 (32 bytes long) in little endian.
-(data (i32.const 4)
-	"\09\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"
-	"\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"
-	"\00\00\00\00"
-)
-;; Amount of value to transfer.
-;; Represented by u128 (16 bytes long) in little endian.
-(data (i32.const 36)
-	"\06\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00\00"
-	"\00\00"
-)
-)
-"#;
-
-#[test]
-fn deploying_wasm_contract_should_work() {
-	let transfer_code = wabt::wat2wasm(CODE_TRANSFER).unwrap();
-	let transfer_ch = <Runtime as frame_system::Trait>::Hashing::hash(&transfer_code);
-
-	let addr = <Runtime as pallet_contracts::Trait>::DetermineContractAddress::contract_address_for(
-		&transfer_ch,
-		&[],
-		&charlie(),
-	);
-
-	let b = construct_block(
-		&mut new_test_ext(COMPACT_CODE, false),
-		1,
-		GENESIS_HASH.into(),
-		vec![
-			CheckedExtrinsic {
-				signed: None,
-				function: Call::Timestamp(pallet_timestamp::Call::set(42 * 1000)),
-			},
-			CheckedExtrinsic {
-				signed: Some((charlie(), signed_extra(0, 0))),
-				function: Call::Contracts(
-					pallet_contracts::Call::put_code::<Runtime>(transfer_code)
-				),
-			},
-			CheckedExtrinsic {
-				signed: Some((charlie(), signed_extra(1, 0))),
-				function: Call::Contracts(
-					pallet_contracts::Call::instantiate::<Runtime>(
-						1 * DOLLARS,
-						500_000_000,
-						transfer_ch,
-						Vec::new()
-					)
-				),
-			},
-			CheckedExtrinsic {
-				signed: Some((charlie(), signed_extra(2, 0))),
-				function: Call::Contracts(
-					pallet_contracts::Call::call::<Runtime>(
-						pallet_indices::address::Address::Id(addr.clone()),
-						10,
-						500_000_000,
-						vec![0x00, 0x01, 0x02, 0x03]
-					)
-				),
-			},
-		]
-	);
-
-	let mut t = new_test_ext(COMPACT_CODE, false);
-
-	executor_call::<NeverNativeValue, fn() -> _>(
-		&mut t,
-		"Core_execute_block",
-		&b.0,
-		false,
-		None,
-	).0.unwrap();
-
-	t.execute_with(|| {
-		// Verify that the contract constructor worked well and code of TRANSFER contract is actually deployed.
-		assert_eq!(
-			&pallet_contracts::ContractInfoOf::<Runtime>::get(addr)
-				.and_then(|c| c.get_alive())
-				.unwrap()
-				.code_hash,
-			&transfer_ch
 		);
 	});
 }
