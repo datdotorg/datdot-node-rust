@@ -552,6 +552,7 @@ impl pallet_identity::Trait for Runtime {
 
 parameter_types! {
 	pub const AttestorsPerChallenge: u32 = 3;
+	pub const ChallengeDelay: u32 = 2;
 }
 
 impl dat_verify::Trait for Runtime {
@@ -559,9 +560,10 @@ impl dat_verify::Trait for Runtime {
 	type Randomness = RandomnessCollectiveFlip;
 	type Hash = Hash;
 	type ForceOrigin = pallet_collective::EnsureMember<AccountId, CouncilCollective>;
-	type Proposal = Call;
 	type AttestorsPerChallenge = AttestorsPerChallenge;
+	type Proposal = Call;
 	type Scheduler = Scheduler;
+	type ChallengeDelay = ChallengeDelay;
 }
 
 parameter_types! {

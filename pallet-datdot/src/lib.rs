@@ -30,6 +30,7 @@ use frame_support::{
 		schedule::Named as ScheduleNamed,
 	},
 	weights::{
+		MINIMUM_WEIGHT,
 		DispatchClass::{
 			Operational,
 		}
@@ -75,8 +76,9 @@ pub trait Trait: system::Trait{
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
 	type ForceOrigin: EnsureOrigin<<Self as system::Trait>::Origin>;
-	type Proposal: Parameter + Dispatchable<Origin=Self::Origin>;
 	type AttestorsPerChallenge: Get<u32>;
+	type ChallengeDelay: Get<u32>;
+	type Proposal: Parameter + Dispatchable<Origin=Self::Origin> + From<Call<Self>>;
 	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal>;
 }
 
@@ -419,6 +421,7 @@ decl_module!{
 		
 		fn deposit_event() = default;
 		const AttestorsPerChallenge: u32 = T::AttestorsPerChallenge::get();
+		const ChallengeDelay: u32 = T::ChallengeDelay::get();
 
 		#[weight = 10000] //todo weight
 		fn force_clear_challenge(origin, account: T::AccountId, challenge_index: u64){
@@ -719,75 +722,15 @@ decl_module!{
 			<UsersStorage<T>>::remove(account);
 		}
 
-		/*
-		fn on_initialize(n: T::BlockNumber) => Weight {
-			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
-			let challenge_index = <ChallengeIndex>::get();
-			let valid_users = <UsersCount>::get();
-			let valid_users_len = valid_users.len();
-			
-			match dat_vec.last() {
-				Some(last_index) => {
-			// if no one is currently selected to give proof, select someone if someone exists to select
-			if !<ChallengeMap>::contains_key(&challenge_index) && valid_users_len > 0 {
-				let nonce = <Nonce>::get();
-				let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
-				.using_encoded(|mut b| u64::decode(&mut b))
-				.expect("hash must be of correct size; Qed");
-				let new_time_limit = new_random % last_index;
-				let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
-				let future_block = 
-					n + T::BlockNumber::from(challenge_length);
-				let selected_user = (new_random as usize % valid_users_len);
-				let random_user_index = valid_users.get(selected_user)
-					.expect("the remainder is always in bounds when % len");
-				let random_user = <Users<T>>::get(random_user_index);
-				let users_dats = <UsersStorage<T>>::get(&random_user);
-				let users_dats_len = users_dats.len();
-				let random_dat_id = users_dats.get(new_random as usize % users_dats_len)
-					.expect("the remainder is always in bounds when % len");
-				let random_dat = <DatKey>::get(random_dat_id);
-				let dat_tree_len = <TreeSize>::get(&random_dat);
-				let mut random_leave = 0;
-				if dat_tree_len != 0 { // avoid 0 divisor 
-					random_leave = new_random % dat_tree_len;
-				} 
-				let y : u64;
-				if <SelectedUserIndex<T>>::contains_key(&random_user) {
-					let (user_index, count) = <SelectedUserIndex<T>>::get(&random_user);
-					<SelectedUserIndex<T>>::insert(&random_user, (user_index, count+1));
-					y = user_index;
-				} else {	
-					let user_index = <UserIndex>::get();
-					<SelectedUserIndex<T>>::insert(&random_user, (user_index, 1));
-					<UserIndex>::put(<UserIndex>::get() + 1);
-					y = user_index;
-				}
-				<SelectedChallenges<T>>::insert(&challenge_index, (random_dat, random_leave, future_block));
-				<SelectedUsers<T>>::insert(&y, &random_user);
-				<ChallengeMap>::insert(challenge_index, y);
-				<Nonce>::put(<Nonce>::get() + 1);
-				<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
-				Self::deposit_event(RawEvent::Challenge(random_user, future_block));
-			}},
-				None => (),
-			}
-			10000.weigh_data(())
-		}
-		*/
 
 		#[weight = (10000, Operational)] //todo weight
 		fn submit_challenge(origin, selected_user: u64, dat_id: u64){
-			let dat_vec : Vec<DatIdIndex> = <DatId>::get();
-			match dat_vec.last() {
-			Some(last_index) => {
 			let challenge_index = <ChallengeIndex>::get();
 			let nonce = <Nonce>::get();
 			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|mut b| u64::decode(&mut b))
 				.expect("hash must be of correct size; Qed");
-			let new_time_limit = new_random % last_index;
-			let challenge_length = new_time_limit.try_into().unwrap_or(2) + 1;
+			let challenge_length = T::ChallengeDelay::get();
 			let future_block : T::BlockNumber =
 			<system::Module<T>>::block_number() + T::BlockNumber::from(challenge_length);
 			let dat_pubkey = <DatKey>::get(dat_id);
@@ -814,11 +757,34 @@ decl_module!{
 			<Nonce>::put(<Nonce>::get() + 1);
 			<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
 			Self::deposit_event(RawEvent::Challenge(selected_user_key, future_block));
-			},
-				None => (),
+		}
+
+		#[weight = (100000, Operational)] //todo
+		fn submit_scheduled_challenge(
+			origin,
+			selected_user: u64,
+			dat_id: u64,
+			start_in: T::BlockNumber,
+			repeat_in: T::BlockNumber,
+			repeat_times: u32
+		){
+			let account = ensure_signed(origin)?;
+			if T::Scheduler::schedule_named(
+				(account, dat_id),
+				start_in,
+				Some((repeat_in, repeat_times)),
+				255,
+				Call::submit_challenge(selected_user, dat_id).into()
+			).is_err(){
+				frame_support::print("LOGIC ERROR: submit_scheduled_challenge failed");
 			}
 		}
 
+/*
+		fn on_initialize(n: T::BlockNumber) => Weight {
+			MINIMUM_WEIGHT
+		}
+*/ //some bug here, on_initialize breaks
 		fn on_finalize(n: T::BlockNumber) {
 			for (challenge_index, user_index) in <ChallengeMap>::iter() {
 				let user = <SelectedUsers<T>>::get(user_index);
