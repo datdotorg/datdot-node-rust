@@ -441,6 +441,8 @@ decl_module!{
 			let account = ensure_signed(origin)?;
 			// TODO - verify proof!
 
+
+			native::info!("submitProof; challengeIndex: {:#?}", challenge_index);
 			let challenge_attestors = Self::get_attestors_for(challenge_index);
 			<ChallengeAttestors>::insert(&challenge_index, &challenge_attestors);
 			Self::deposit_event(RawEvent::AttestPhase(challenge_index, challenge_attestors));
