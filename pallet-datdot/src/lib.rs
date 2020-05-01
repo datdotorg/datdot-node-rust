@@ -30,7 +30,6 @@ use frame_support::{
 		schedule::Named as ScheduleNamed,
 	},
 	weights::{
-		MINIMUM_WEIGHT,
 		DispatchClass::{
 			Operational,
 		}
