@@ -905,18 +905,18 @@ impl<T: Trait> Module<T> {
 					None => {
 						//add an element if the vec is empty
 						dat_vec.push(1);
-						lowest_free_index = 1;
+						lowest_free_index = 0;
 					},
 				}
 				//register new unknown dats
-				<DatKey>::insert(&lowest_free_index-1, &pubkey)
+				<DatKey>::insert(&lowest_free_index, &pubkey)
 			},
 		}
 		<MerkleRoot>::insert(&pubkey, (root_hash, sig));
 		<DatId>::put(dat_vec);
 		<TreeSize>::insert(&pubkey, tree_size);
 		<UserRequestsMap<T>>::insert(&pubkey, &account);
-		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index-1, pubkey));
+		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
 	}
 
 	//borrowing from society pallet ---
@@ -937,18 +937,23 @@ impl<T: Trait> Module<T> {
 	// ---
 
 	fn get_random_attestors() -> Vec<u64> {
-		let nonce = <Nonce>::get();
-		let mut random_select: Vec<u64> = Vec::new();
-		let seed = (T::Randomness::random(b"dat_random_attestors"), nonce)
-			.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
-			.expect("input is padded with zeroes; qed");
-		let members = <ActiveAttestors>::get();
-		let mut rng = ChaChaRng::from_seed(seed);
-		let pick_attestor = |_| Self::pick_item(&mut rng, &members[..]).expect("exited if members empty; qed");
-		for attestor in (0..T::AttestorsPerChallenge::get()).map(pick_attestor){
-			random_select.push(*attestor);
+		let members : Vec<u64> = <ActiveAttestors>::get();
+		match members.len() {
+			0 => members,
+			_ => {
+				let nonce = <Nonce>::get();
+				let mut random_select: Vec<u64> = Vec::new();
+				let seed = (T::Randomness::random(b"dat_random_attestors"), nonce)
+					.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
+					.expect("input is padded with zeroes; qed");
+				let mut rng = ChaChaRng::from_seed(seed);
+				let pick_attestor = |_| Self::pick_item(&mut rng, &members[..]).expect("exited if members empty; qed");
+				for attestor in (0..T::AttestorsPerChallenge::get()).map(pick_attestor){
+					random_select.push(*attestor);
+				}
+				random_select
+			},
 		}
-		random_select
 	}
 
 }
