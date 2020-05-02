@@ -340,6 +340,7 @@ decl_event!(
 		NewPin(u64, u64),
 		Attest(AccountId, Attestation),
 		AttestPhase(u64, ChallengeAttestations),
+		ChallengeSuccess(AccountId, Public),
 	}
 );
 
@@ -794,21 +795,27 @@ decl_module!{
 				native::info!("OnFinalize; Challenge: {:#?}", challenge);
 				native::info!("OnFinalize; Dat: {:#?}", dat);
 				let deadline = challenge.2;
-				let attesting = <ChallengeAttestors>::contains_key(challenge_index);
-				if (n == deadline) {
-					if !attesting {
-						<SelectedChallenges<T>>::remove(challenge_index);
-						<ChallengeMap>::remove(challenge_index);
-						Self::punish_seeder(user.clone());
-						Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
+				let attesting = Self::is_attestation_complete(challenge_index);
+				if (n >= deadline) {
+					match attesting {
+						Some(true) => {
+							<SelectedChallenges<T>>::remove(challenge_index);
+							<ChallengeMap>::remove(challenge_index);
+							Self::reward_seeder(user.clone());
+							Self::deposit_event(RawEvent::ChallengeSuccess(user, dat));
+						},
+						_ => {
+							<SelectedChallenges<T>>::remove(challenge_index);
+							<ChallengeMap>::remove(challenge_index);
+							Self::punish_seeder(user.clone());
+							Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
+						},
 					}
 				} else {
 					if <RemovedDats>::get().contains(&dat) {
 						Self::clear_challenge(user, challenge_index);
 					}
-					//todo charge fee*
 				}
-				//todo - iterate through attestations
 			}
 			<RemovedDats>::kill();
 		}
@@ -828,6 +835,33 @@ impl<T: Trait> Module<T> {
 				completed: attestors.completed,
 			}
 		}
+	}
+
+	fn is_attestation_complete(challenge_index: u64) -> Option<bool> {
+		let state = Self::get_attestors_for(challenge_index);
+		let mut fail_count = 0;
+		for expected in state.clone().expected_attestors {
+			// If any of the expected attestors haven't returned, return None.
+			if state.completed
+				.iter()
+				.map(|x|x.0)
+				.position(|x| x == expected)
+				.and_then(|y| state.completed.get(y)
+					.and_then(|z|{
+						if z.1.latency.is_none(){
+							fail_count += 1;
+							Some(false)
+						} else {
+							Some(true)
+						}
+					}
+				))
+				.is_none(){
+					return None;
+				} 
+		}
+		// else return Some(success status)
+		Some(fail_count<=(T::AttestorsPerChallenge::get()/2))
 	}
 
 	fn clear_challenge(account: T::AccountId, challenge_index: u64){
