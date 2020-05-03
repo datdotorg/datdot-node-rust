@@ -544,23 +544,30 @@ decl_module!{
 		#[weight = 10000]
 		fn register_attestor(origin){
 			let account = ensure_signed(origin)?;
-			let mut att_count = <AttestorsCount>::get();
-			let user_index_option = att_count.pop();
-			let current_user_index = match user_index_option {
-				Some(x) => x,
-				None => 0,
-			};
-			let i = current_user_index.saturating_add(1);
-			<Attestors<T>>::insert(&i, &account);
-			let mut atts = <AttestorsCount>::get();
-			atts.push(i);
-			<AttestorsCount>::put(atts);
-			let mut att_vec = <ActiveAttestors>::get();
-			att_vec.push(i);
-			att_vec.sort_unstable();
-			att_vec.dedup();
-			native::info!("registerAttestor; att_vec: {:#?}", att_vec);
-			<ActiveAttestors>::put(att_vec);
+			// if already active, stop here. (if any active attestor matches. shortcircuit)
+			// super inefficient worstcase, needs refactor at some point.
+			let mut all_attestors = <Attestors<T>>::iter().map(|(_,y)| y);
+			if !<ActiveAttestors>::get().iter().any(|_|{
+				all_attestors.any(|y| y == account)
+			}){
+				let mut att_count = <AttestorsCount>::get();
+				let user_index_option = att_count.pop();
+				let current_user_index = match user_index_option {
+					Some(x) => x,
+					None => 0,
+				};
+				let i = current_user_index.saturating_add(1);
+				<Attestors<T>>::insert(&i, &account);
+				let mut atts = <AttestorsCount>::get();
+				atts.push(i);
+				<AttestorsCount>::put(atts);
+				let mut att_vec = <ActiveAttestors>::get();
+				att_vec.push(i);
+				att_vec.sort_unstable();
+				att_vec.dedup();
+				native::info!("registerAttestor; att_vec: {:#?}", att_vec);
+				<ActiveAttestors>::put(att_vec);
+			}
 		}
 
 		#[weight = 10000]
@@ -634,7 +641,7 @@ decl_module!{
 			native::info!("Last Dat Index: {:#?}", last);
 			match last {
 				Some(last_index) => {
-				let nonce = <Nonce>::get();
+				let nonce = Self::unique_nonce();
 				let new_random = (T::Randomness::random(b"dat_verify_register"), &nonce, &account)
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("hash must be of correct size; Qed");
@@ -650,7 +657,6 @@ decl_module!{
 				dat_hosters.dedup();
 				<DatHosters<T>>::insert(&dat_pubkey, &dat_hosters);
 				<UsersStorage<T>>::insert(&account, &current_user_dats);
-				<Nonce>::mutate(|m| *m += 1);
 				let user_index;
 				if(current_user_dats.len() == 1){
 					let user_index_option = <UsersCount>::get().pop();
@@ -720,7 +726,7 @@ decl_module!{
 		#[weight = (10000, Operational)] //todo weight
 		fn submit_challenge(origin, selected_user: u64, dat_id: u64){
 			let challenge_index = <ChallengeIndex>::get();
-			let nonce = <Nonce>::get();
+			let nonce = Self::unique_nonce();
 			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|mut b| u64::decode(&mut b))
 				.expect("hash must be of correct size; Qed");
@@ -748,7 +754,6 @@ decl_module!{
 			<SelectedChallenges<T>>::insert(&challenge_index, (dat_pubkey, random_leaf, future_block));
 			<SelectedUsers<T>>::insert(&y, &selected_user_key);
 			<ChallengeMap>::insert(challenge_index, y);
-			<Nonce>::put(<Nonce>::get() + 1);
 			<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
 			Self::deposit_event(RawEvent::Challenge(selected_user_key, future_block));
 		}
@@ -824,7 +829,7 @@ impl<T: Trait> Module<T> {
 		if attestors.expected_attestors.len() > 0{
 			return attestors
 		} else {
-			let mut expected_attestors = Self::get_random_attestors();
+			let mut expected_attestors = Self::get_random_attestors(challenge_index);
 			expected_attestors.sort_unstable();
 			expected_attestors.dedup();
 			return ChallengeAttestations {
@@ -968,14 +973,20 @@ impl<T: Trait> Module<T> {
 	}
 	// ---
 
-	fn get_random_attestors() -> Vec<u64> {
+	fn unique_nonce() -> u64 {
+		let nonce = <Nonce>::get();
+		<Nonce>::put(nonce+1);
+		nonce
+	}
+
+	fn get_random_attestors(challenge_index: u64) -> Vec<u64> {
 		let members : Vec<u64> = <ActiveAttestors>::get();
 		match members.len() {
 			0 => members,
 			_ => {
-				let nonce = <Nonce>::get();
+				let nonce : u64 = Self::unique_nonce();
 				let mut random_select: Vec<u64> = Vec::new();
-				let seed = (T::Randomness::random(b"dat_random_attestors"), nonce)
+				let seed = (nonce, challenge_index, T::Randomness::random(b"dat_random_attestors"))
 					.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
 					.expect("input is padded with zeroes; qed");
 				let mut rng = ChaChaRng::from_seed(seed);
@@ -983,7 +994,6 @@ impl<T: Trait> Module<T> {
 				for attestor in (0..T::AttestorsPerChallenge::get()).map(pick_attestor){
 					random_select.push(*attestor);
 				}
-				<Nonce>::put(nonce+1);
 				random_select
 			},
 		}
