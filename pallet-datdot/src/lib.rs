@@ -443,7 +443,8 @@ decl_module!{
 
 
 			native::info!("submitProof; challengeIndex: {:#?}", challenge_index);
-			let challenge_attestors = Self::get_attestors_for(challenge_index);
+			let mut challenge_attestors = Self::get_attestors_for(challenge_index);
+			native::info!("submitProof; challengeAttestors: {:#?}", challenge_attestors);
 			<ChallengeAttestors>::insert(&challenge_index, &challenge_attestors);
 			Self::deposit_event(RawEvent::AttestPhase(challenge_index, challenge_attestors));
 			Self::clear_challenge(account, challenge_index);
@@ -544,31 +545,22 @@ decl_module!{
 		fn register_attestor(origin){
 			let account = ensure_signed(origin)?;
 			let mut att_count = <AttestorsCount>::get();
-			let last = att_count.last();
-			match last {
-				Some(last_index) => {
-					let user_index_option = att_count.pop();
-					let current_user_index = match user_index_option {
-						Some(x) => x,
-						None => 0,
-					};
-					match current_user_index.checked_add(1){
-						Some(i) => {
-							<Attestors<T>>::insert(&i, &account);
-							let mut atts = <AttestorsCount>::get();
-							atts.push(i);
-							<AttestorsCount>::put(atts);
-							<ActiveAttestors>::mutate(|mut att_vec|{
-								att_vec.push(i);
-								att_vec.sort_unstable();
-								att_vec.dedup();
-							});
-						},
-						None => (),
-					}
-				},
-				None => (),
-			}
+			let user_index_option = att_count.pop();
+			let current_user_index = match user_index_option {
+				Some(x) => x,
+				None => 0,
+			};
+			let i = current_user_index.saturating_add(1);
+			<Attestors<T>>::insert(&i, &account);
+			let mut atts = <AttestorsCount>::get();
+			atts.push(i);
+			<AttestorsCount>::put(atts);
+			let mut att_vec = <ActiveAttestors>::get();
+			att_vec.push(i);
+			att_vec.sort_unstable();
+			att_vec.dedup();
+			native::info!("registerAttestor; att_vec: {:#?}", att_vec);
+			<ActiveAttestors>::put(att_vec);
 		}
 
 		#[weight = 10000]
@@ -787,6 +779,9 @@ decl_module!{
 			MINIMUM_WEIGHT
 		}
 */ //some bug here, on_initialize breaks
+// consider turning this into a schedulable
+// "anyone calls" function (verify_challenges),
+// like submit_scheduled_challenge
 		fn on_finalize(n: T::BlockNumber) {
 			for (challenge_index, user_index) in <ChallengeMap>::iter() {
 				let user = <SelectedUsers<T>>::get(user_index);
@@ -829,8 +824,11 @@ impl<T: Trait> Module<T> {
 		if attestors.expected_attestors.len() > 0{
 			return attestors
 		} else {
+			let mut expected_attestors = Self::get_random_attestors();
+			expected_attestors.sort_unstable();
+			expected_attestors.dedup();
 			return ChallengeAttestations {
-				expected_attestors: Self::get_random_attestors(),
+				expected_attestors: expected_attestors,
 				expected_friends: attestors.expected_friends,
 				completed: attestors.completed,
 			}
@@ -985,6 +983,7 @@ impl<T: Trait> Module<T> {
 				for attestor in (0..T::AttestorsPerChallenge::get()).map(pick_attestor){
 					random_select.push(*attestor);
 				}
+				<Nonce>::put(nonce+1);
 				random_select
 			},
 		}
