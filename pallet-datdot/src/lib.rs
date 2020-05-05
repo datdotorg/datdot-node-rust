@@ -986,6 +986,7 @@ impl<T: Trait> Module<T> {
 			_ => {
 				let nonce : u64 = Self::unique_nonce();
 				let mut random_select: Vec<u64> = Vec::new();
+				// added challenge_index to seed in order to ensure challenges get unique randomness.
 				let seed = (nonce, challenge_index, T::Randomness::random(b"dat_random_attestors"))
 					.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
 					.expect("input is padded with zeroes; qed");

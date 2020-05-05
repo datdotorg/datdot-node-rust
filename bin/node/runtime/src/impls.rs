@@ -118,7 +118,7 @@ mod tests {
 	use super::*;
 	use sp_runtime::assert_eq_error_rate;
 	use crate::{MaximumBlockWeight, AvailableBlockRatio, Runtime};
-	use crate::{constants::currency::*, TransactionPayment, TargetBlockFullness};
+	use crate::{constants::currency::*, TargetBlockFullness};
 	use frame_support::weights::Weight;
 	use core::num::NonZeroI128;
 
