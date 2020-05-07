@@ -1,0 +1,48 @@
+[package]
+name = "datdot-node"
+version = "0.0.1"
+authors = ["Datdot Authors"]
+description = "Datdot Demo Node"
+edition = "2018"
+license = "Unlicense"
+build = "build.rs"
+homepage = "https://playproject.io"
+repository = "https://github.com/playproject-io/datdot-substrate"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[[bin]]
+name = "datdot-node"
+
+[dependencies]
+futures = "0.3.4"
+log = "0.4.8"
+structopt = "0.3.8"
+
+sc-cli = { version = "0.8.0-alpha.7" }
+sc-rpc = { version = "2.0.0-alpha.7" }
+sp-core = { version = "2.0.0-alpha.7" }
+sc-executor = { version = "0.8.0-alpha.7" }
+sc-service = { version = "0.8.0-alpha.7" }
+sp-inherents = { version = "2.0.0-alpha.7"  }
+sc-transaction-pool = { version = "2.0.0-alpha.7" }
+sp-transaction-pool = { version = "2.0.0-alpha.7" }
+sc-network = { version = "0.8.0-alpha.7" }
+sc-consensus-babe = { version = "0.8.0-alpha.7" }
+sp-consensus-babe = { version = "0.8.0-alpha.7" }
+sp-authority-discovery = { version = "2.0.0-alpha.7" }
+sp-consensus = { version = "0.8.0-alpha.7" }
+sc-consensus = { version = "0.8.0-alpha.7" }
+sc-finality-grandpa = { version = "0.8.0-alpha.7" }
+sp-finality-grandpa = { version = "2.0.0-alpha.7" }
+sc-client-api = { version = "2.0.0-alpha.7" }
+sp-runtime = { version = "2.0.0-alpha.7" }
+sc-basic-authorship = { version = "0.8.0-alpha.7" }
+sc-authority-discovery = { version = "0.8.0-alpha.7" }
+pallet-im-online = { version = "2.0.0-alpha.7" }
+
+datdot-runtime = { version = "2.0.0-alpha.7", path = "../runtime" }
+
+[build-dependencies]
+substrate-build-script-utils = { version = "2.0.0-alpha.7" }
