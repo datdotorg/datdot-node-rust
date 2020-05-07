@@ -41,8 +41,7 @@ use sp_std::convert::{
 use frame_system::{
 	self as system,
 	ensure_signed,
-	ensure_root,
-	offchain
+	ensure_root
 };
 use codec::{Encode, Decode};
 use sp_core::{
@@ -240,16 +239,16 @@ impl HashPayload for RootHashPayload {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|dirtybits|{
 			native::info!("Root Hash Dirty Payload [{:#?}]: {:x?}", dirtybits.len(), dirtybits);
-			let mut dirtycopy = dirtybits.to_vec();
+			let dirtycopy = dirtybits.to_vec();
 			let mut x = 2;
 			let mut bits : Vec<u8> = Vec::new();
 			bits.push(*dirtycopy.get(0).expect(""));
 			loop{
 				let pt1 = dirtycopy.get(x+0..x+32).expect("");
-				let mut pt2: &mut [u8; 8] = &mut [0,0,0,0,0,0,0,0];
+				let pt2: &mut [u8; 8] = &mut [0,0,0,0,0,0,0,0];
 				pt2.copy_from_slice(dirtycopy.get(x+32..x+40).expect(""));
 				pt2.reverse();
-				let mut pt3: &mut [u8;8] = &mut [0,0,0,0,0,0,0,0];
+				let pt3: &mut [u8;8] = &mut [0,0,0,0,0,0,0,0];
 				pt3.copy_from_slice(dirtycopy.get(x+40..x+48).expect(""));
 				pt3.reverse();
 				let mut newbits = [
@@ -273,10 +272,10 @@ impl HashPayload for ParentHashPayload {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
 			native::info!("Parent Hash Payload Dirty [{:x?}]: {:x?}", b.len(), b);
-			let mut dirtycopy = b.to_vec();
+			let dirtycopy = b.to_vec();
 			let mut cleanbits: Vec<u8> = Vec::new();
-			let mut hash_type = dirtycopy.get(0..1).expect("");
-			let mut total_length = &mut [0,0,0,0,0,0,0,0];
+			let hash_type = dirtycopy.get(0..1).expect("");
+			let total_length = &mut [0,0,0,0,0,0,0,0];
 			total_length.copy_from_slice(dirtycopy.get(1..9).expect(""));
 			total_length.reverse();
 
@@ -292,10 +291,10 @@ impl HashPayload for ChunkHashPayload {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
 			native::info!("Chunk Hash Payload: {:x?}", b);
-			let mut dirtycopy = b.to_vec();
+			let dirtycopy = b.to_vec();
 			let mut cleanbits: Vec<u8> = Vec::new();
-			let mut hash_type = dirtycopy.get(0..1).expect("");
-			let mut total_length = &mut [0,0,0,0,0,0,0,0];
+			let hash_type = dirtycopy.get(0..1).expect("");
+			let total_length = &mut [0,0,0,0,0,0,0,0];
 			total_length.copy_from_slice(dirtycopy.get(1..9).expect(""));
 			total_length.reverse();
 
@@ -437,13 +436,13 @@ decl_module!{
 		//gutted temporarily to demonstrate datdot flow.
 		//we should manually verify proof from raw bits.
 		#[weight = (10000, Operational)] //todo weight
-		fn submit_proof(origin, challenge_index: u64, proof: Vec<u8>) {
+		fn submit_proof(origin, challenge_index: u64, _proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			// TODO - verify proof!
 
 
 			native::info!("submitProof; challengeIndex: {:#?}", challenge_index);
-			let mut challenge_attestors = Self::get_attestors_for(challenge_index);
+			let challenge_attestors = Self::get_attestors_for(challenge_index);
 			native::info!("submitProof; challengeAttestors: {:#?}", challenge_attestors);
 			<ChallengeAttestors>::insert(&challenge_index, &challenge_attestors);
 			Self::deposit_event(RawEvent::AttestPhase(challenge_index, challenge_attestors));
@@ -574,7 +573,7 @@ decl_module!{
 		fn submit_attestation(origin, challenge_index: u64, attestation: Attestation) {
 			let attestor = ensure_signed(origin)?;
 			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
-			let mut attestor_index;
+			let attestor_index;
 			for (user_index, user_account) in <Attestors<T>>::iter(){
 				if user_account == attestor {
 					attestor_index = user_index;
@@ -608,7 +607,7 @@ decl_module!{
 					match user_indexes.binary_search(&user_index){
 						Ok(i) => {
 							user_indexes.remove(i);
-							<ActiveAttestors>::mutate(|mut att_vec|{
+							<ActiveAttestors>::mutate(|att_vec|{
 								match att_vec.binary_search(&user_index){
 									Ok(e) => {
 										att_vec.remove(e);
@@ -658,7 +657,7 @@ decl_module!{
 				<DatHosters<T>>::insert(&dat_pubkey, &dat_hosters);
 				<UsersStorage<T>>::insert(&account, &current_user_dats);
 				let user_index;
-				if(current_user_dats.len() == 1){
+				if current_user_dats.len() == 1 {
 					let user_index_option = <UsersCount>::get().pop();
 					let current_user_index = match user_index_option {
 						Some(x) => {
@@ -724,7 +723,7 @@ decl_module!{
 
 
 		#[weight = (10000, Operational)] //todo weight
-		fn submit_challenge(origin, selected_user: u64, dat_id: u64){
+		fn submit_challenge(_origin, selected_user: u64, dat_id: u64){
 			let challenge_index = <ChallengeIndex>::get();
 			let nonce = Self::unique_nonce();
 			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
@@ -796,7 +795,7 @@ decl_module!{
 				native::info!("OnFinalize; Dat: {:#?}", dat);
 				let deadline = challenge.2;
 				let attesting = Self::is_attestation_complete(challenge_index);
-				if (n >= deadline) {
+				if n >= deadline {
 					match attesting {
 						Some(true) => {
 							<SelectedChallenges<T>>::remove(challenge_index);
@@ -905,7 +904,7 @@ impl<T: Trait> Module<T> {
 	}
 
 
-	fn reward_seeder(rewarded: T::AccountId) {
+	fn reward_seeder(_rewarded: T::AccountId) {
 		//todo
 	}
 

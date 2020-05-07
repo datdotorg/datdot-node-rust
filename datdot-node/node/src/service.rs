@@ -1,7 +1,7 @@
 //! Service and ServiceFactory implementation. Specialized wrapper over substrate service.
 
 use std::sync::Arc;
-use std::time::Duration;
+
 use sc_client_api::ExecutorProvider;
 use sc_consensus::LongestChain;
 use datdot_runtime::{self, primitives::Block, RuntimeApi};

@@ -117,8 +117,8 @@ impl<T: Get<Perquintill>> Convert<Fixed128, Fixed128> for TargetedFeeAdjustment<
 mod tests {
 	use super::*;
 	use sp_runtime::assert_eq_error_rate;
-	use crate::{MaximumBlockWeight, AvailableBlockRatio, Runtime};
-	use crate::{constants::currency::*, TargetBlockFullness};
+	use crate::{MaximumBlockWeight, Runtime};
+	use crate::{TargetBlockFullness};
 	use frame_support::weights::Weight;
 	use core::num::NonZeroI128;
 
