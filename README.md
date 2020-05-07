@@ -5,25 +5,25 @@ join our [telegram](https://t.me/joinchat/CgTftxXJvp6iYayqDjP7lQ) or [gitter](ht
 
 ![](https://i.imgur.com/oGPIbZQ.jpg)
 
-datdot code is currently located in `pallet-datdot`.
+datdot code is currently located in `pallets/datdot`.
 
-the default substrate node cli is modified - with custom governance, and most unneeded features removed, but `pallet-datdot` added. After substrate stabilizes at version 2.0.0, the scaffolding will be reduced and this repo will consist of a minimal test node and FRAME pallet.
+the template node uses BABE consensus, but most unneeded features removed, including tx fees, but `pallet-datdot` added.
 
 ### Building
 
 to build the datdot dev runtime, run:
 
-`cargo build -p node-runtime`
+`cargo build -p datdot-runtime`
 
 to build the test node, run:
 
-`cargo build -p node-cli`
+`cargo build -p datdot-node`
 
-add the `--release` flag to either of those commands to create a release build - debug and release builds will be located in `./target/release` or `./target/debug`
+add the `--release` flag to either of those commands to create a release build - debug and release builds will be located in `./target/release` or `./target/debug` respectively.
 
 ### Running
 
-currently, executing `./target/release/substrate --dev` (or `./target/debug/substrate --dev` if you didn't use a `--release` flag) runs a dev node. You can interact with this node by using the [Polkadot.js Apps UI](https://polkadot.js.org/apps/) - selecting "local node" as your endpoint in the settings page should connect you to your node; however, until you [specify the additional types](https://polkadot.js.org/api/start/types.extend.html#user-defined-types) in the developer tab, all functionality of the Apps UI will remain disabled.
+currently, executing `./target/release/datdot-node --dev` (or `./target/debug/datdot-node --dev` if you didn't use a `--release` flag) runs a dev node. You can interact with this node by using the [Polkadot.js Apps UI](https://polkadot.js.org/apps/) - selecting "local node" as your endpoint in the settings page should connect you to your node; however, until you [specify the additional types](https://polkadot.js.org/api/start/types.extend.html#user-defined-types) in the developer tab, all functionality of the Apps UI will remain disabled.
 
 Optionally, additionally running with `--execution Native` (case sensitive) will allow you to see more verbose logging from parts of the runtime using `native::info!(...)` calls.
 
