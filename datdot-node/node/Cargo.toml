@@ -20,29 +20,29 @@ futures = "0.3.4"
 log = "0.4.8"
 structopt = "0.3.8"
 
-sc-cli = { version = "0.8.0-alpha.8" }
-sc-rpc = { version = "2.0.0-alpha.8" }
-sp-core = { version = "2.0.0-alpha.8" }
-sc-executor = { version = "0.8.0-alpha.8" }
-sc-service = { version = "0.8.0-alpha.8" }
-sp-inherents = { version = "2.0.0-alpha.8"  }
-sc-transaction-pool = { version = "2.0.0-alpha.8" }
-sp-transaction-pool = { version = "2.0.0-alpha.8" }
-sc-network = { version = "0.8.0-alpha.8" }
-sc-consensus-babe = { version = "0.8.0-alpha.8" }
-sp-consensus-babe = { version = "0.8.0-alpha.8" }
-sp-authority-discovery = { version = "2.0.0-alpha.8" }
-sp-consensus = { version = "0.8.0-alpha.8" }
-sc-consensus = { version = "0.8.0-alpha.8" }
-sc-finality-grandpa = { version = "0.8.0-alpha.8" }
-sp-finality-grandpa = { version = "2.0.0-alpha.8" }
-sc-client-api = { version = "2.0.0-alpha.8" }
-sp-runtime = { version = "2.0.0-alpha.8" }
-sc-basic-authorship = { version = "0.8.0-alpha.8" }
-sc-authority-discovery = { version = "0.8.0-alpha.8" }
-pallet-im-online = { version = "2.0.0-alpha.8" }
+sc-cli = { version = "0.8.0-rc2" }
+sc-rpc = { version = "2.0.0-rc2" }
+sp-core = { version = "2.0.0-rc2" }
+sc-executor = { version = "0.8.0-rc2" }
+sc-service = { version = "0.8.0-rc2" }
+sp-inherents = { version = "2.0.0-rc2"  }
+sc-transaction-pool = { version = "2.0.0-rc2" }
+sp-transaction-pool = { version = "2.0.0-rc2" }
+sc-network = { version = "0.8.0-rc2" }
+sc-consensus-babe = { version = "0.8.0-rc2" }
+sp-consensus-babe = { version = "0.8.0-rc2" }
+sp-authority-discovery = { version = "2.0.0-rc2" }
+sp-consensus = { version = "0.8.0-rc2" }
+sc-consensus = { version = "0.8.0-rc2" }
+sc-finality-grandpa = { version = "0.8.0-rc2" }
+sp-finality-grandpa = { version = "2.0.0-rc2" }
+sc-client-api = { version = "2.0.0-rc2" }
+sp-runtime = { version = "2.0.0-rc2" }
+sc-basic-authorship = { version = "0.8.0-rc2" }
+sc-authority-discovery = { version = "0.8.0-rc2" }
+pallet-im-online = { version = "2.0.0-rc2" }
 
-datdot-runtime = { version = "2.0.0-alpha.8", path = "../runtime" }
+datdot-runtime = { version = "2.0.0-rc2", path = "../runtime" }
 
 [build-dependencies]
-substrate-build-script-utils = { version = "2.0.0-alpha.8" }
+substrate-build-script-utils = { version = "2.0.0-rc2" }

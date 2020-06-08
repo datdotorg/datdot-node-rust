@@ -1,6 +1,6 @@
 [package]
 name = "pallet-datdot"
-version = "2.0.0-alpha.8"
+version = "2.0.0-rc2"
 authors = ["Datdot Authors"]
 edition = "2018"
 license = "Unlicense"
