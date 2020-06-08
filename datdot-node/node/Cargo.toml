@@ -20,29 +20,29 @@ futures = "0.3.4"
 log = "0.4.8"
 structopt = "0.3.8"
 
-sc-cli = { version = "0.8.0-alpha.7" }
-sc-rpc = { version = "2.0.0-alpha.7" }
-sp-core = { version = "2.0.0-alpha.7" }
-sc-executor = { version = "0.8.0-alpha.7" }
-sc-service = { version = "0.8.0-alpha.7" }
-sp-inherents = { version = "2.0.0-alpha.7"  }
-sc-transaction-pool = { version = "2.0.0-alpha.7" }
-sp-transaction-pool = { version = "2.0.0-alpha.7" }
-sc-network = { version = "0.8.0-alpha.7" }
-sc-consensus-babe = { version = "0.8.0-alpha.7" }
-sp-consensus-babe = { version = "0.8.0-alpha.7" }
-sp-authority-discovery = { version = "2.0.0-alpha.7" }
-sp-consensus = { version = "0.8.0-alpha.7" }
-sc-consensus = { version = "0.8.0-alpha.7" }
-sc-finality-grandpa = { version = "0.8.0-alpha.7" }
-sp-finality-grandpa = { version = "2.0.0-alpha.7" }
-sc-client-api = { version = "2.0.0-alpha.7" }
-sp-runtime = { version = "2.0.0-alpha.7" }
-sc-basic-authorship = { version = "0.8.0-alpha.7" }
-sc-authority-discovery = { version = "0.8.0-alpha.7" }
-pallet-im-online = { version = "2.0.0-alpha.7" }
+sc-cli = { version = "0.8.0-alpha.8" }
+sc-rpc = { version = "2.0.0-alpha.8" }
+sp-core = { version = "2.0.0-alpha.8" }
+sc-executor = { version = "0.8.0-alpha.8" }
+sc-service = { version = "0.8.0-alpha.8" }
+sp-inherents = { version = "2.0.0-alpha.8"  }
+sc-transaction-pool = { version = "2.0.0-alpha.8" }
+sp-transaction-pool = { version = "2.0.0-alpha.8" }
+sc-network = { version = "0.8.0-alpha.8" }
+sc-consensus-babe = { version = "0.8.0-alpha.8" }
+sp-consensus-babe = { version = "0.8.0-alpha.8" }
+sp-authority-discovery = { version = "2.0.0-alpha.8" }
+sp-consensus = { version = "0.8.0-alpha.8" }
+sc-consensus = { version = "0.8.0-alpha.8" }
+sc-finality-grandpa = { version = "0.8.0-alpha.8" }
+sp-finality-grandpa = { version = "2.0.0-alpha.8" }
+sc-client-api = { version = "2.0.0-alpha.8" }
+sp-runtime = { version = "2.0.0-alpha.8" }
+sc-basic-authorship = { version = "0.8.0-alpha.8" }
+sc-authority-discovery = { version = "0.8.0-alpha.8" }
+pallet-im-online = { version = "2.0.0-alpha.8" }
 
-datdot-runtime = { version = "2.0.0-alpha.7", path = "../runtime" }
+datdot-runtime = { version = "2.0.0-alpha.8", path = "../runtime" }
 
 [build-dependencies]
-substrate-build-script-utils = { version = "2.0.0-alpha.7" }
+substrate-build-script-utils = { version = "2.0.0-alpha.8" }

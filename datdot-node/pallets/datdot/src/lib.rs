@@ -10,18 +10,21 @@
 /// https://github.com/paritytech/substrate/blob/master/srml/example/src/lib.rs
 use sp_std::prelude::*;
 use sp_std::fmt::Debug;
+use sp_std::collections::btree_map::BTreeMap;
 use frame_support::{
 	decl_module,
 	decl_storage, 
 	decl_event,
 	decl_error,
 	debug::native,
+	fail,
 	ensure,
 	Parameter,
 	storage::{
 		StorageMap,
 		StorageValue,
-		IterableStorageMap
+		IterableStorageMap,
+		IterableStorageDoubleMap,
 	},
 	traits::{
 		EnsureOrigin,
@@ -30,6 +33,7 @@ use frame_support::{
 		schedule::Named as ScheduleNamed,
 	},
 	weights::{
+		Pays,
 		DispatchClass::{
 			Operational,
 		}
@@ -219,7 +223,7 @@ pub struct ParentHashInRoot {
 
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-pub struct RootHashPayload {
+pub struct TreeHashPayload {
 	hash_type: u8, //2
 	children: Vec<ParentHashInRoot>
 }
@@ -233,7 +237,7 @@ trait HashPayload where Self: Sized + Encode {
 	}
 }
 
-impl HashPayload for RootHashPayload {
+impl HashPayload for TreeHashPayload {
 	//hackish manual manipulation of the bits being hashed.
 	//made using trial-and-error. lots of memcpy. loop. kill it with fire.
 	fn hash(&self) -> H256 {
@@ -325,21 +329,38 @@ type DatIdVec = Vec<DatIdIndex>;
 type UserIdIndex = u64; 
 type DatSize = u64;
 
+/// encoded: SortedVec<(ChunkIndex, EncoderId)>,
+/// state: State,
+#[derive(Default, Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+struct HostedArchive {
+	encoded: Vec<(u64, u64)>,
+    encoding: Vec<(u64, u64)>,
+    state: BTreeMap<u64, Challenge>, //K = chunk index
+}
+
+///	Active(blockNumber),
+///	Attesting(ChallengeAttestations),
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+enum Challenge {
+	Active(u64),
+	Attesting(ChallengeAttestations),
+}
 
 decl_event!(
 	pub enum Event<T> 
 	where
-	AccountId = <T as system::Trait>::AccountId,
-	BlockNumber = <T as system::Trait>::BlockNumber 
+	AccountId = <T as system::Trait>::AccountId
 	{
 		SomethingStored(DatIdIndex, Public),
 		SomethingUnstored(DatIdIndex, Public),
-		Challenge(AccountId, BlockNumber),
-		ChallengeFailed(AccountId, Public),
+		Challenge(AccountId, Public),
+		//user index, dat index
+		ChallengeFailed(u64, u64),
 		NewPin(u64, u64),
 		Attest(AccountId, Attestation),
-		AttestPhase(u64, ChallengeAttestations),
-		ChallengeSuccess(AccountId, Public),
+		AttestPhase(u64, u64, ChallengeAttestations),
+		//user index, dat index
+		ChallengeSuccess(u64, u64),
 	}
 );
 
@@ -363,6 +384,8 @@ decl_error! {
 		InvalidState,
 		/// declared tree size is invalid
 		InvalidTreeSize,
+		/// hoster/hosted pair does not exist
+		InvalidChallenge,
     }
 }
 
@@ -383,34 +406,21 @@ decl_storage! {
 		pub UsersCount: Vec<u64>;
 		// users are put into an "array"
 		pub Users get(fn user): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
-		// each user has a vec of dats they seed
-		pub UsersStorage: map hasher(twox_64_concat) T::AccountId => Vec<DatIdIndex>;
-		// each dat has a vec of users pinning it
-		pub DatHosters: map hasher(twox_64_concat) Public => Vec<T::AccountId>;
+		pub UserIndices get(fn user_id): map hasher(twox_64_concat) T::AccountId => UserIdIndex;
 		// each user has a mapping and vec of dats they want seeded
 		pub UserRequestsMap: map hasher(twox_64_concat) Public => T::AccountId;
-
-		// current check condition
-		pub ChallengeIndex: u64;
 		pub UserIndex: u64;
-		// Challenge => User
-		pub ChallengeMap: map hasher(twox_64_concat) u64 => u64;
-		// Dat and which index to verify, and deadline
-		pub SelectedChallenges: map hasher(twox_64_concat) u64 => (Public, u64, T::BlockNumber);
-		pub RemovedDats: Vec<Public>;
-		pub SelectedUsers: map hasher(twox_64_concat) u64 => T::AccountId;
-		// (index, challenge count)
-		pub SelectedUserIndex: map hasher(twox_64_concat) T::AccountId => (u64, u64);
-		pub Nonce: u64;
-
-		// all attestors
+		// hoster, archive => HostedArchive
+		pub HostedMap: double_map hasher(twox_64_concat) u64, hasher(twox_64_concat) u64 => HostedArchive;
+		//Attestors
 		pub Attestors get(fn atts): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
-		// vec of occupied attestor indeces for when attestors are removed.
 		pub AttestorsCount: Vec<u64>;
-		// non-friend, randomly-selectable attestors.
 		pub ActiveAttestors: Vec<u64>;
-		// challenge => ([expected attestors], [rewarded friends], [completed attestations])
-		pub ChallengeAttestors: map hasher(twox_64_concat) u64 => ChallengeAttestations;
+		//Encoders
+		pub Encoders get(fn encs): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
+		pub EncodersCount: Vec<u64>;
+		pub ActiveEncoders: Vec<u64>;
+		pub Nonce: u64;
 	}
 }
 
@@ -422,41 +432,40 @@ decl_module!{
 		const AttestorsPerChallenge: u32 = T::AttestorsPerChallenge::get();
 		const ChallengeDelay: u32 = T::ChallengeDelay::get();
 
-		#[weight = 10000] //todo weight
-		fn force_clear_challenge(origin, account: T::AccountId, challenge_index: u64){
+		#[weight = (10000, Operational, Pays::No)] //todo weight
+		fn force_clear_challenge(origin, user_index: u64, dat_index: u64, chunk_index: u64){
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
 				.or_else(ensure_root)?; 
-			Self::clear_challenge(account, challenge_index);
-			
+			Self::clear_challenge(user_index, dat_index, chunk_index);
 		}
 		
 
 		//test things progressively, doing quicker computations first.
 		//gutted temporarily to demonstrate datdot flow.
 		//we should manually verify proof from raw bits.
-		#[weight = (10000, Operational)] //todo weight
-		fn submit_proof(origin, challenge_index: u64, _proof: Vec<u8>) {
+		#[weight = (10000, Operational, Pays::No)] //todo weight
+		fn submit_proof(origin, dat_index: u64, chunk_index:u64, _proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
+			let user_index = <UserIndices<T>>::get(&account);
+			
 			// TODO - verify proof!
-
-
-			native::info!("submitProof; challengeIndex: {:#?}", challenge_index);
-			let challenge_attestors = Self::get_attestors_for(challenge_index);
-			native::info!("submitProof; challengeAttestors: {:#?}", challenge_attestors);
-			<ChallengeAttestors>::insert(&challenge_index, &challenge_attestors);
-			Self::deposit_event(RawEvent::AttestPhase(challenge_index, challenge_attestors));
-			Self::clear_challenge(account, challenge_index);
+			if let Some(challenge_attestors) = Self::update_attestors_for(user_index, dat_index, chunk_index){
+				Self::deposit_event(RawEvent::AttestPhase(user_index, dat_index, challenge_attestors));
+				Self::clear_challenge(user_index, dat_index, chunk_index);
+			} else {
+				fail!(Error::<T>::InvalidChallenge)
+			}
 		}
 
 
 		/// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
-		#[weight = 10000]
-		fn register_data(origin, merkle_root: (Public, RootHashPayload, H512)) {
+		#[weight = (10000, Pays::No)]
+		fn register_data(origin, merkle_root: (Public, TreeHashPayload, H512)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
 			let root_hash_children = merkle_root.clone().1.children;
-			let root_hash_sanitized_payload = RootHashPayload {
+			let root_hash_sanitized_payload = TreeHashPayload {
 				hash_type: 2,
 				children: root_hash_children,
 			};
@@ -477,11 +486,11 @@ decl_module!{
 		}
 
 		//debug method when you don't have valid data for register_data, no validity checks, only root.
-		#[weight = 10000]
+		#[weight = (10000, Pays::No)]
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
-			merkle_root: (Public, RootHashPayload, H512)
+			merkle_root: (Public, TreeHashPayload, H512)
 		)
 		{
 			T::ForceOrigin::try_origin(origin)
@@ -491,7 +500,7 @@ decl_module!{
 		}
 
 		//user stops requesting others pin their data
-		#[weight = 10000]
+		#[weight = (10000, Pays::No)]
 		fn unregister_data(origin, index: DatIdIndex){
 			let account = ensure_signed(origin)?;
 			let pubkey = <DatKey>::get(index);
@@ -513,34 +522,21 @@ decl_module!{
 				},
 				None => (),
 			}
-			<DatHosters<T>>::get(&pubkey)
-				.iter()
-				.for_each(|account| {
-					let mut storage : Vec<DatIdIndex> =
-						<UsersStorage<T>>::get(account.clone());
-					match storage.binary_search(&index).ok() {
-						Some(index) => {storage.remove(index);},
-						None => (),
-					}
-					<UsersStorage<T>>::insert(account.clone(), &storage);
-				});
-			<DatHosters<T>>::remove(&pubkey);
 			<DatKey>::remove(&index);
 			<UserRequestsMap<T>>::remove(&pubkey);
 			<TreeSize>::remove(&pubkey);
 			<MerkleRoot>::remove(&pubkey);
-			//if the dat being unregistered is currently part of the challenge
-			let mut tmp = match <RemovedDats>::try_get() {
-				Ok(expr) => expr,
-				Err(_) => Vec::new(),
-			};
-			tmp.push(pubkey);
-			<RemovedDats>::put(tmp);
+			//inefficient - fixme later.
+			for (hoster_index, dat_index, _) in <HostedMap>::iter() {
+				if dat_index == index {
+					<HostedMap>::remove(hoster_index, dat_index);
+				}
+			}
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
 		}
 
 
-		#[weight = 10000]
+		#[weight = (10000, Pays::No)]
 		fn register_attestor(origin){
 			let account = ensure_signed(origin)?;
 			// if already active, stop here. (if any active attestor matches. shortcircuit)
@@ -569,35 +565,37 @@ decl_module!{
 			}
 		}
 
-		#[weight = 10000]
-		fn submit_attestation(origin, challenge_index: u64, attestation: Attestation) {
-			let attestor = ensure_signed(origin)?;
-			let mut challenge : ChallengeAttestations = <ChallengeAttestors>::get(challenge_index);
-			let attestor_index;
-			for (user_index, user_account) in <Attestors<T>>::iter(){
-				if user_account == attestor {
-					attestor_index = user_index;
-				match challenge.expected_attestors.binary_search(&attestor_index) {
-					Ok(index) => {
-						challenge.expected_attestors.remove(index);
-						challenge.completed.push((attestor_index, attestation));
-					},
-					Err(_) => (),
-				}
-				match challenge.expected_friends.binary_search(&attestor_index) {
-					Ok(index) => {
-						challenge.expected_friends.remove(index);
-						challenge.completed.push((attestor_index, attestation));
-					},
-					Err(_) => (),
-				}
-				Self::deposit_event(RawEvent::Attest(attestor, attestation));
-				break;
-				}
-			}
+		#[weight = (10000, Pays::No)]
+		fn register_encoder(origin){
+			let account = ensure_signed(origin)?;
+
 		}
 
-		#[weight = 10000]
+		#[weight = (10000, Pays::No)]
+		fn register_encoding(origin, hoster_id: u64, dat_id: u64, start: u64, range: u64){
+			let account = ensure_signed(origin)?;
+			// TODO: register encoding and begin challenge phase
+			// TODO: selected_hoster AND selected_encoder must register_encoding
+		}
+
+
+		#[weight = (10000, Pays::No)]
+		fn refute_encoding(origin, archive: u64, index: u64, encoded: Vec<u8>, proof: Vec<u8>){
+
+		}
+
+		#[weight = (10000, Pays::No)]
+		fn submit_attestation(
+			origin,
+			hoster_index: u64,
+			dat_index: u64,
+			chunk_index: u64,
+			attestation: Attestation
+		) {
+			let attestor = ensure_signed(origin)?;
+		}
+
+		#[weight = (10000, Pays::No)]
 		fn unregister_attestor(origin){
 			let account = ensure_signed(origin)?;
 			for (user_index, user_account) in <Attestors<T>>::iter(){
@@ -631,7 +629,7 @@ decl_module!{
 
 		
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
-		#[weight = 10000]
+		#[weight = (10000, Pays::No)]
 		fn register_seeder(origin) {
 			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
@@ -646,18 +644,12 @@ decl_module!{
 					.expect("hash must be of correct size; Qed");
 				let random_index = new_random % last_index;
 				let dat_pubkey = DatKey::get(&random_index);
-				let mut current_user_dats = <UsersStorage<T>>::get(&account);
-				let mut dat_hosters = <DatHosters<T>>::get(&dat_pubkey);
-				current_user_dats.push(random_index);
-				current_user_dats.sort_unstable();
-				current_user_dats.dedup();
-				dat_hosters.push(account.clone());
-				dat_hosters.sort_unstable();
-				dat_hosters.dedup();
-				<DatHosters<T>>::insert(&dat_pubkey, &dat_hosters);
-				<UsersStorage<T>>::insert(&account, &current_user_dats);
+				// DO SOMETHING HERE
+
+				// SOMETHING DONE
 				let user_index;
-				if current_user_dats.len() == 1 {
+				let user_exists = <UserIndices<T>>::contains_key(&account);
+				if !user_exists {
 					let user_index_option = <UsersCount>::get().pop();
 					let current_user_index = match user_index_option {
 						Some(x) => {
@@ -665,14 +657,14 @@ decl_module!{
 						},
 						None => 0,
 					};
+					//maybe this should panic instead of saturate
 					user_index = current_user_index.saturating_add(1);
 					let mut users = <UsersCount>::get();
 					users.push(user_index);
 					<UsersCount>::put(users);
+					<UserIndices<T>>::insert(&account, user_index);
 				} else {
-					let user_option = <Users<T>>::iter().find(|(_, x)| *x == account);
-					ensure!(user_option.is_some(), Error::<T>::InvalidState);
-					user_index = user_option.unwrap().0;
+					user_index = <UserIndices<T>>::get(&account);
 				}
 				<Users<T>>::insert(&user_index, &account);
 				native::info!("NewPin; Account: {:#?}", account);
@@ -686,78 +678,37 @@ decl_module!{
 		} 
 
 
-		#[weight = 10000]
+		#[weight = (10000, Pays::No)]
 		fn unregister_seeder(origin) {
 			let account = ensure_signed(origin)?;
-			for dat_id in <UsersStorage<T>>::get(&account) {
-				let dat_key = <DatKey>::get(dat_id);
-				let mut hosters = <DatHosters<T>>::get(&dat_key);
-				hosters.sort_unstable();
-				match hosters.binary_search(&account) {
-					Ok(index) => {
-						hosters.remove(index);
-					},
-					_ => (),
-				}
-				<DatHosters<T>>::insert(dat_key, hosters);
-			}
-			for (user_index, user_account) in <Users<T>>::iter(){
-				if user_account == account {
-					<Users<T>>::remove(user_index);
-					let mut user_indexes = <UsersCount>::get();
-					match user_indexes.binary_search(&user_index){
-						Ok(i) => {
-							user_indexes.remove(i);
-						},
-						_ => (),
-					}
-					if user_indexes.len() > 0 {
-						<UsersCount>::put(user_indexes);
-					} else {
-						<UsersCount>::kill();
-					}
-				}
-			}
-			<UsersStorage<T>>::remove(account);
+			let user_id = <UserIndices<T>>::get(account);	
+			<HostedMap>::remove_prefix(user_id);
+			//maybe there should be a penalty here?
 		}
 
 
-		#[weight = (10000, Operational)] //todo weight
+		#[weight = (10000, Operational, Pays::No)] //todo weight
 		fn submit_challenge(_origin, selected_user: u64, dat_id: u64){
-			let challenge_index = <ChallengeIndex>::get();
+			let hosted_map = <HostedMap>::get(selected_user, dat_id);
+			// TODO: verify has encoded and block if encoding is not complete.
 			let nonce = Self::unique_nonce();
 			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|mut b| u64::decode(&mut b))
 				.expect("hash must be of correct size; Qed");
-			let challenge_length = T::ChallengeDelay::get();
-			let future_block : T::BlockNumber =
-			<system::Module<T>>::block_number() + T::BlockNumber::from(challenge_length);
 			let dat_pubkey = <DatKey>::get(dat_id);
 			let dat_tree_len = <TreeSize>::get(&dat_pubkey);
 			let mut random_leaf = 0;
 			if dat_tree_len != 0 { // avoid 0 divisor 
 				random_leaf = new_random % dat_tree_len;
-			} 
-			let y : u64;
-			let selected_user_key = <Users<T>>::get(&selected_user);
-			if <SelectedUserIndex<T>>::contains_key(&selected_user_key) {
-				let (user_index, count) = <SelectedUserIndex<T>>::get(&selected_user_key);
-				<SelectedUserIndex<T>>::insert(&selected_user_key, (user_index, count+1));
-				y = user_index;
-			} else {	
-				let user_index = <UserIndex>::get();
-				<SelectedUserIndex<T>>::insert(&selected_user_key, (user_index, 1));
-				<UserIndex>::put(<UserIndex>::get() + 1);
-				y = user_index;
 			}
-			<SelectedChallenges<T>>::insert(&challenge_index, (dat_pubkey, random_leaf, future_block));
-			<SelectedUsers<T>>::insert(&y, &selected_user_key);
-			<ChallengeMap>::insert(challenge_index, y);
-			<ChallengeIndex>::put(<ChallengeIndex>::get() + 1);
-			Self::deposit_event(RawEvent::Challenge(selected_user_key, future_block));
+			let selected_user_key = <Users<T>>::get(&selected_user);
+			let challenge_length = T::ChallengeDelay::get();
+			Self::deposit_event(RawEvent::Challenge(selected_user_key, dat_pubkey));
 		}
 
-		#[weight = (100000, Operational)] //todo
+
+
+		#[weight = (100000, Operational, Pays::No)] //todo
 		fn submit_scheduled_challenge(
 			origin,
 			selected_user: u64,
@@ -767,8 +718,14 @@ decl_module!{
 			repeat_times: u32
 		){
 			let account = ensure_signed(origin)?;
+			let mut name : Vec<u8> = selected_user.to_be_bytes().to_vec();
+			name.extend(dat_id.to_be_bytes().to_vec());
+			//this makes me sad.
+			let startnum : u64 = start_in.try_into().unwrap_or(0).try_into().unwrap_or(0u64);
+			// :(
+			name.extend(startnum.to_be_bytes().to_vec());
 			if T::Scheduler::schedule_named(
-				(account, dat_id),
+				name,
 				start_in,
 				Some((repeat_in, repeat_times)),
 				255,
@@ -787,68 +744,101 @@ decl_module!{
 // "anyone calls" function (verify_challenges),
 // like submit_scheduled_challenge
 		fn on_finalize(n: T::BlockNumber) {
-			for (challenge_index, user_index) in <ChallengeMap>::iter() {
-				let user = <SelectedUsers<T>>::get(user_index);
-				let challenge = <SelectedChallenges<T>>::get(challenge_index);
-				let dat = challenge.0;
-				native::info!("OnFinalize; Challenge: {:#?}", challenge);
-				native::info!("OnFinalize; Dat: {:#?}", dat);
-				let deadline = challenge.2;
-				let attesting = Self::is_attestation_complete(challenge_index);
-				if n >= deadline {
-					match attesting {
-						Some(true) => {
-							<SelectedChallenges<T>>::remove(challenge_index);
-							<ChallengeMap>::remove(challenge_index);
-							Self::reward_seeder(user.clone());
-							Self::deposit_event(RawEvent::ChallengeSuccess(user, dat));
+			for (user_index, dat_index, hosted_archive) in <HostedMap>::iter() {
+				for &chunk_index in hosted_archive.state.keys(){
+					let deadline_option = hosted_archive.state.get(&chunk_index);
+					let attesting = Self::get_attestation_status(user_index, dat_index, chunk_index);
+					match deadline_option {
+						Some(Challenge::Active(deadline)) => {
+							if deadline < &n.try_into().unwrap_or(usize::MAX).try_into().unwrap_or(u64::MAX) {
+								Self::clear_challenge(user_index, dat_index, chunk_index);
+								Self::punish_seeder(user_index);
+								Self::deposit_event(RawEvent::ChallengeFailed(user_index, dat_index));
+							}
 						},
-						_ => {
-							<SelectedChallenges<T>>::remove(challenge_index);
-							<ChallengeMap>::remove(challenge_index);
-							Self::punish_seeder(user.clone());
-							Self::deposit_event(RawEvent::ChallengeFailed(user, dat));
+						Some(Challenge::Attesting(_)) => {
+							match attesting {
+								Some(true) => {
+									Self::clear_challenge(user_index, dat_index, chunk_index);
+									Self::reward_seeder(user_index);
+									Self::deposit_event(RawEvent::ChallengeSuccess(user_index, dat_index));
+								},
+								_ => (),
+							}
 						},
-					}
-				} else {
-					if <RemovedDats>::get().contains(&dat) {
-						Self::clear_challenge(user, challenge_index);
+						_ => (),
 					}
 				}
 			}
-			<RemovedDats>::kill();
 		}
 	}
 }
 
 impl<T: Trait> Module<T> {
 
-	fn get_attestors_for(challenge_index: u64) -> ChallengeAttestations{
-		let attestors = <ChallengeAttestors>::get(challenge_index);
-		if attestors.expected_attestors.len() > 0{
-			return attestors
-		} else {
-			let mut expected_attestors = Self::get_random_attestors(challenge_index);
-			expected_attestors.sort_unstable();
-			expected_attestors.dedup();
-			return ChallengeAttestations {
-				expected_attestors: expected_attestors,
-				expected_friends: attestors.expected_friends,
-				completed: attestors.completed,
-			}
+	fn update_attestors_for(
+		hoster_index: u64,
+		dat_index: u64,
+		chunk_index: u64,
+		) -> Option<ChallengeAttestations> {
+		let mut hosted : HostedArchive = <HostedMap>::get(hoster_index, dat_index);
+		let attestations : ChallengeAttestations;
+		let challenge = hosted.state.get(&chunk_index);
+		match challenge {
+			Some(Challenge::Attesting(attestors)) => {
+				if attestors.expected_attestors.len() == 0{
+					let mut expected_attestors = 
+						Self::get_random_attestors(hoster_index, dat_index);
+					expected_attestors.sort_unstable();
+					expected_attestors.dedup();
+					attestations = ChallengeAttestations {
+						expected_attestors: expected_attestors,
+						expected_friends: attestors.expected_friends.clone(),
+						completed: attestors.completed.clone(),
+					};
+					hosted.state.insert(chunk_index, Challenge::Attesting(attestations.clone()));
+					<HostedMap>::insert(hoster_index, dat_index, hosted);
+				} else {
+					attestations = ChallengeAttestations {
+						expected_attestors: attestors.expected_attestors.clone(),
+						expected_friends: attestors.expected_friends.clone(),
+						completed: attestors.completed.clone(),
+					};
+				}
+				Some(attestations)
+			},
+			Some(Challenge::Active(_)) => {
+				let mut expected_attestors = 
+					Self::get_random_attestors(hoster_index, dat_index);
+				expected_attestors.sort_unstable();
+				expected_attestors.dedup();
+				attestations = ChallengeAttestations {
+					expected_attestors: expected_attestors,
+					expected_friends: Vec::new(),
+					completed: Vec::new(),
+				};
+				hosted.state.insert(chunk_index, Challenge::Attesting(attestations.clone()));
+				<HostedMap>::insert(hoster_index, dat_index, hosted);
+				Some(attestations)
+			},
+			_ => None,
 		}
 	}
 
-	fn is_attestation_complete(challenge_index: u64) -> Option<bool> {
-		let state = Self::get_attestors_for(challenge_index);
-		let mut fail_count = 0;
-		for expected in state.clone().expected_attestors {
-			// If any of the expected attestors haven't returned, return None.
-			if state.completed
-				.iter()
-				.map(|x|x.0)
-				.position(|x| x == expected)
-				.and_then(|y| state.completed.get(y)
+	fn get_attestation_status(hoster_index: u64, dat_index: u64, chunk_index: u64) -> Option<bool> {
+		if let Some(state) = Self::update_attestors_for(
+			hoster_index,
+			dat_index,
+			chunk_index
+		){
+			let mut fail_count = 0;
+			for expected in state.clone().expected_attestors {
+				// If any of the expected attestors haven't returned, return None.
+				if state.completed
+					.iter()
+					.map(|x|x.0)
+					.position(|x| x == expected)
+					.and_then(|y| state.completed.get(y)
 					.and_then(|z|{
 						if z.1.latency.is_none(){
 							fail_count += 1;
@@ -863,54 +853,40 @@ impl<T: Trait> Module<T> {
 				} 
 		}
 		// else return Some(success status)
-		Some(fail_count<=(T::AttestorsPerChallenge::get()/2))
+			Some(fail_count<=(T::AttestorsPerChallenge::get()/2))
+		} else {
+			None
+		}
 	}
 
-	fn clear_challenge(account: T::AccountId, challenge_index: u64){
-		let account_index = <ChallengeMap>::get(&challenge_index);
-			let (_, count) = <SelectedUserIndex<T>>::get(&account);
-			match count {
-				1 => {	
-					<SelectedUsers<T>>::remove(account_index);
-					<SelectedUserIndex<T>>::remove(account);
-				},
-				_ => <SelectedUserIndex<T>>::insert(account, (account_index, count-1))
-			}
-			<SelectedChallenges<T>>::remove(challenge_index);
-			<ChallengeMap>::remove(challenge_index);
+	fn clear_challenge(user_index: u64, dat_index: u64, chunk_index: u64){
+		let mut hoster : HostedArchive = <HostedMap>::get(user_index, dat_index);
+		hoster.state.remove(&chunk_index);
+		<HostedMap>::insert(user_index, dat_index, hoster);
 	}
 
-	fn punish_seeder(punished: T::AccountId) {
-		let user_tuple = <SelectedUserIndex<T>>::take(&punished);
-		match user_tuple.1 {
-			1 => <SelectedUsers<T>>::remove(user_tuple.0),
-			_ => {
-					<SelectedUserIndex<T>>::mutate(
-						&punished,
-						|tuple|{
-							let el1 = tuple.0.clone();
-							let el2 = tuple.1-1;
-							*tuple = (el1, el2);
-						});
-					()
-				},
-		};
-		/* disabled while punishment is determined
-		let inner_origin =
-		system::RawOrigin::Signed(punished.clone());
-		Self::unregister_seeder(inner_origin.into());
-		// todo: punish seeder.
-		*/
+	fn punish_seeder(punished: u64) {
+		for x in <HostedMap>::iter_prefix_values(punished).enumerate(){
+			let (index, archive): (usize, HostedArchive) = x;
+			let index_small : u64 = index.try_into().unwrap();
+			let new_archive = HostedArchive {
+				encoded: archive.encoded,
+				encoding: archive.encoding,
+				state: BTreeMap::new()
+			};
+			<HostedMap>::insert(punished, index_small, new_archive);
+		}
 	}
 
 
-	fn reward_seeder(_rewarded: T::AccountId) {
+	fn reward_seeder(_rewarded: u64) {
 		//todo
+		unimplemented!();
 	}
 
 	fn forced_register_data(
 		account: T::AccountId,
-		merkle_root: (Public, RootHashPayload, H512)
+		merkle_root: (Public, TreeHashPayload, H512)
 	)
 	{
 		let pubkey = merkle_root.0;
@@ -978,15 +954,15 @@ impl<T: Trait> Module<T> {
 		nonce
 	}
 
-	fn get_random_attestors(challenge_index: u64) -> Vec<u64> {
+	fn get_random_attestors(hoster_index: u64, dat_index: u64) -> Vec<u64> {
 		let members : Vec<u64> = <ActiveAttestors>::get();
 		match members.len() {
 			0 => members,
 			_ => {
 				let nonce : u64 = Self::unique_nonce();
 				let mut random_select: Vec<u64> = Vec::new();
-				// added challenge_index to seed in order to ensure challenges get unique randomness.
-				let seed = (nonce, challenge_index, T::Randomness::random(b"dat_random_attestors"))
+				// added indeces to seed in order to ensure challenges get unique randomness.
+				let seed = (nonce, hoster_index, dat_index, T::Randomness::random(b"dat_random_attestors"))
 					.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
 					.expect("input is padded with zeroes; qed");
 				let mut rng = ChaChaRng::from_seed(seed);

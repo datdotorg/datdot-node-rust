@@ -1,6 +1,6 @@
 [package]
 name = "pallet-datdot"
-version = "2.0.0-alpha.7"
+version = "2.0.0-alpha.8"
 authors = ["Datdot Authors"]
 edition = "2018"
 license = "Unlicense"
@@ -14,15 +14,16 @@ targets = ["x86_64-unknown-linux-gnu"]
 [dependencies]
 serde = { version = "1.0.106", optional = true }
 codec = { package = "parity-scale-codec", version = "1.3.0", default-features = false }
-frame-support = { version = "2.0.0-alpha.7", default-features = false }
-frame-system = { version = "2.0.0-alpha.7", default-features = false }
-sp-runtime = { version = "2.0.0-alpha.7", default-features = false }
-sp-std = { version = "2.0.0-alpha.7", default-features = false }
-sp-io = { version = "2.0.0-alpha.7", default-features = false }
-sp-core = { version = "2.0.0-alpha.7", default-features = false }
+frame-support = { version = "2.0.0-alpha.8", default-features = false }
+frame-system = { version = "2.0.0-alpha.8", default-features = false }
+sp-runtime = { version = "2.0.0-alpha.8", default-features = false }
+sp-std = { version = "2.0.0-alpha.8", default-features = false }
+sp-io = { version = "2.0.0-alpha.8", default-features = false }
+sp-core = { version = "2.0.0-alpha.8", default-features = false }
 rand_chacha = { version = "0.2", default-features = false }
+brotli = { version = "3.3.0", default-features = false }
 
-frame-benchmarking = { version = "2.0.0-alpha.7", default-features = false, optional = true }
+frame-benchmarking = { version = "2.0.0-alpha.8", default-features = false, optional = true }
 
 [features]
 default = ["std"]
@@ -35,6 +36,7 @@ std = [
 	"frame-system/std",
 	"sp-io/std",
 	"sp-core/std",
-	"sp-std/std"
+	"sp-std/std",
+	"brotli/std"
 ]
 runtime-benchmarks = ["frame-benchmarking"]
