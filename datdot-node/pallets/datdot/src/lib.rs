@@ -581,7 +581,9 @@ decl_module!{
 
 		#[weight = (10000, Pays::No)]
 		fn refute_encoding(origin, archive: u64, index: u64, encoded: Vec<u8>, proof: Vec<u8>){
-
+			//TODO
+			//remove an invalid encoding if `encoded` is 
+			//signed by `encoder` and `proof` does not match encoded chunk. 
 		}
 
 		#[weight = (10000, Pays::No)]
@@ -826,7 +828,7 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn get_attestation_status(hoster_index: u64, dat_index: u64, chunk_index: u64) -> Option<bool> {
-		if let Some(state) = Self::update_attestors_for(
+		if let Some(state) = Self::update_attestors_for( 
 			hoster_index,
 			dat_index,
 			chunk_index
