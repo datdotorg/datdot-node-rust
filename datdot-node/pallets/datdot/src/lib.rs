@@ -45,7 +45,8 @@ use sp_std::convert::{
 use frame_system::{
 	self as system,
 	ensure_signed,
-	ensure_root
+	ensure_root,
+	RawOrigin
 };
 use codec::{Encode, Decode};
 use sp_core::{
@@ -356,7 +357,7 @@ decl_event!(
 		Challenge(AccountId, Public),
 		//user index, dat index
 		ChallengeFailed(u64, u64),
-		NewPin(u64, u64),
+		NewPin(u64, u64, u64),
 		Attest(AccountId, Attestation),
 		AttestPhase(u64, u64, ChallengeAttestations),
 		//user index, dat index
@@ -572,6 +573,12 @@ decl_module!{
 		}
 
 		#[weight = (10000, Pays::No)]
+		fn unregister_encoder(origin){
+			let account = ensure_signed(origin)?;
+
+		}
+
+		#[weight = (10000, Pays::No)]
 		fn register_encoding(origin, hoster_id: u64, dat_id: u64, start: u64, range: u64){
 			let account = ensure_signed(origin)?;
 			// TODO: register encoding and begin challenge phase
@@ -584,6 +591,13 @@ decl_module!{
 			//TODO
 			//remove an invalid encoding if `encoded` is 
 			//signed by `encoder` and `proof` does not match encoded chunk. 
+		}
+
+		#[weight = (10000, Pays::No)]
+		fn confirm_hosting(origin, archive: u64){
+			//TODO
+			//move a valid encoding to `encoded` if `encoded` is 
+			//signed by `encoder` and `proof` does match encoded chunk. 
 		}
 
 		#[weight = (10000, Pays::No)]
@@ -629,7 +643,6 @@ decl_module!{
 			}
 		}
 
-		
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
 		#[weight = (10000, Pays::No)]
 		fn register_seeder(origin) {
@@ -671,7 +684,8 @@ decl_module!{
 				<Users<T>>::insert(&user_index, &account);
 				native::info!("NewPin; Account: {:#?}", account);
 				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
-				Self::deposit_event(RawEvent::NewPin(user_index, random_index));
+				let publisher_index = <UserIndices<T>>::get(<UserRequestsMap<T>>::get(&dat_pubkey));
+				Self::deposit_event(RawEvent::NewPin(publisher_index, user_index, random_index));
 				},
 				None => {
 					
@@ -707,8 +721,6 @@ decl_module!{
 			let challenge_length = T::ChallengeDelay::get();
 			Self::deposit_event(RawEvent::Challenge(selected_user_key, dat_pubkey));
 		}
-
-
 
 		#[weight = (100000, Operational, Pays::No)] //todo
 		fn submit_scheduled_challenge(
@@ -775,6 +787,35 @@ decl_module!{
 		}
 	}
 }
+
+pub struct EnsureSeeder<T>(sp_std::marker::PhantomData<T>);
+impl<T: Trait> EnsureOrigin<T::Origin> for EnsureSeeder<T> {
+	type Success = T::AccountId;
+	fn try_origin(o: T::Origin) -> Result<Self::Success, T::Origin>{
+		o.into().and_then(|o| match o {
+			RawOrigin::Signed(ref account) => match <UserIndices<T>>::contains_key(&account) {
+				true => Ok(account.clone()),
+				false => Err(T::Origin::from(o)),
+			},
+			_ => Err(T::Origin::from(o)),
+		})
+	}
+}
+
+pub struct EnsureEncoder<T>(sp_std::marker::PhantomData<T>);
+impl<T: Trait> EnsureOrigin<T::Origin> for EnsureEncoder<T> {
+	type Success = T::AccountId;
+	fn try_origin(o: T::Origin) -> Result<Self::Success, T::Origin>{
+		o.into().and_then(|o| match o {
+			RawOrigin::Signed(ref account) => match <UserIndices<T>>::contains_key(&account) {
+				true => Ok(account.clone()),
+				false => Err(T::Origin::from(o)),
+			},
+			_ => Err(T::Origin::from(o)),
+		})
+	}
+}
+
 
 impl<T: Trait> Module<T> {
 

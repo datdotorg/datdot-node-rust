@@ -1,5 +1,7 @@
-//! Substrate Node Template CLI library.
+//! Kitchen Node CLI library.
+
 #![warn(missing_docs)]
+#![warn(unused_extern_crates)]
 
 mod chain_spec;
 #[macro_use]
