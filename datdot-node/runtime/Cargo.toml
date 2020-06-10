@@ -1,21 +1,14 @@
 [package]
 name = "datdot-runtime"
 version = "2.0.0-rc3"
-authors = ["Anonymous"]
-repository = 'https://github.com/substrate-developer-hub/recipes'
+authors = ["datdot authors"]
+repository = 'https://github.com/playproject-io/datdot-substrate'
 edition = "2018"
 license = "GPL-3.0-or-later"
-description = "A runtime that demonstrate converting weights to fees and charging fees in multiple assets"
+description = "A super-minimal runtime to demonstrate pallet-datdot, based on https://github.com/substrate-developer-hub/recipes/tree/master/runtimes/weight-fee-runtime"
 
 [package.metadata.substrate]
-categories = [
-	"runtime",
-	"Weights",
-	"fees",
-	"Assets",
-	"tutorial",
-	"recipe",
-]
+categories = []
 compatibility_version = "2.0.0-rc3"
 
 [dependencies]
