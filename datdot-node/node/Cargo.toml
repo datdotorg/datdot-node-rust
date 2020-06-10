@@ -7,17 +7,10 @@ repository = 'https://github.com/substrate-developer-hub/recipes'
 description = 'An instant-sealing Substrate node for datdot. Based on the substrate kitchen-node.'
 license = "GPL-3.0-or-later"
 
-[package.metadata.substrate]
-categories = [
-	"Node",
-	"Instant Seal",
-	"tutorial",
-	"recipe",
-]
 compatibility_version = "2.0.0-rc3"
 
 [[bin]]
-name = "kitchen-node"
+name = "datdot-node"
 path = "src/main.rs"
 
 [dependencies]

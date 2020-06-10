@@ -433,7 +433,7 @@ decl_module!{
 		const AttestorsPerChallenge: u32 = T::AttestorsPerChallenge::get();
 		const ChallengeDelay: u32 = T::ChallengeDelay::get();
 
-		#[weight = (10000, Operational, Pays::No)] //todo weight
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn force_clear_challenge(origin, user_index: u64, dat_index: u64, chunk_index: u64){
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
@@ -445,7 +445,7 @@ decl_module!{
 		//test things progressively, doing quicker computations first.
 		//gutted temporarily to demonstrate datdot flow.
 		//we should manually verify proof from raw bits.
-		#[weight = (10000, Operational, Pays::No)] //todo weight
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_proof(origin, dat_index: u64, chunk_index:u64, _proof: Vec<u8>) {
 			let account = ensure_signed(origin)?;
 			let user_index = <UserIndices<T>>::get(&account);
@@ -461,7 +461,7 @@ decl_module!{
 
 
 		/// Submit or update a piece of data that you want to have users copy, optionally provide chunk for execution.
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn register_data(origin, merkle_root: (Public, TreeHashPayload, H512)) {
 			let account = ensure_signed(origin)?;
 			let pubkey = merkle_root.0;
@@ -487,7 +487,7 @@ decl_module!{
 		}
 
 		//debug method when you don't have valid data for register_data, no validity checks, only root.
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn force_register_data(
 			origin,
 			account: T::AccountId,
@@ -501,7 +501,7 @@ decl_module!{
 		}
 
 		//user stops requesting others pin their data
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn unregister_data(origin, index: DatIdIndex){
 			let account = ensure_signed(origin)?;
 			let pubkey = <DatKey>::get(index);
@@ -537,7 +537,7 @@ decl_module!{
 		}
 
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn register_attestor(origin){
 			let account = ensure_signed(origin)?;
 			// if already active, stop here. (if any active attestor matches. shortcircuit)
@@ -566,19 +566,19 @@ decl_module!{
 			}
 		}
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn register_encoder(origin){
 			let account = ensure_signed(origin)?;
 
 		}
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn unregister_encoder(origin){
 			let account = ensure_signed(origin)?;
 
 		}
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn register_encoding(origin, hoster_id: u64, dat_id: u64, start: u64, range: u64){
 			let account = ensure_signed(origin)?;
 			// TODO: register encoding and begin challenge phase
@@ -586,21 +586,21 @@ decl_module!{
 		}
 
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn refute_encoding(origin, archive: u64, index: u64, encoded: Vec<u8>, proof: Vec<u8>){
 			//TODO
 			//remove an invalid encoding if `encoded` is 
 			//signed by `encoder` and `proof` does not match encoded chunk. 
 		}
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn confirm_hosting(origin, archive: u64){
 			//TODO
 			//move a valid encoding to `encoded` if `encoded` is 
 			//signed by `encoder` and `proof` does match encoded chunk. 
 		}
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn submit_attestation(
 			origin,
 			hoster_index: u64,
@@ -611,7 +611,7 @@ decl_module!{
 			let attestor = ensure_signed(origin)?;
 		}
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn unregister_attestor(origin){
 			let account = ensure_signed(origin)?;
 			for (user_index, user_account) in <Attestors<T>>::iter(){
@@ -644,7 +644,7 @@ decl_module!{
 		}
 
 		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn register_seeder(origin) {
 			//TODO: bias towards unseeded dats and high incentive
 			let account = ensure_signed(origin)?;
@@ -694,7 +694,7 @@ decl_module!{
 		} 
 
 
-		#[weight = (10000, Pays::No)]
+		#[weight = (100000, Pays::No)]
 		fn unregister_seeder(origin) {
 			let account = ensure_signed(origin)?;
 			let user_id = <UserIndices<T>>::get(account);	
@@ -703,7 +703,7 @@ decl_module!{
 		}
 
 
-		#[weight = (10000, Operational, Pays::No)] //todo weight
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_challenge(_origin, selected_user: u64, dat_id: u64){
 			let hosted_map = <HostedMap>::get(selected_user, dat_id);
 			// TODO: verify has encoded and block if encoding is not complete.
@@ -722,7 +722,7 @@ decl_module!{
 			Self::deposit_event(RawEvent::Challenge(selected_user_key, dat_pubkey));
 		}
 
-		#[weight = (100000, Operational, Pays::No)] //todo
+		#[weight = (1000000, Operational, Pays::No)] //todo
 		fn submit_scheduled_challenge(
 			origin,
 			selected_user: u64,
