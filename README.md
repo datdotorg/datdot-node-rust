@@ -21,6 +21,14 @@ to build the test node, run:
 
 add the `--release` flag to either of those commands to create a release build - debug and release builds will be located in `./target/release` or `./target/debug` respectively.
 
+### Custom Types
+
+You can aggregate the custom types of any pallets in `datdot-node/pallets` by running: 
+`node datdot-node/runtime/aggregate_types.js`
+This will produce a `types.json` file.
+
+Performing this requires each pallet defined in `aggregate_types.js` have their own types.json file premade.
+
 ### Running
 
 currently, executing `./target/release/datdot-node --dev` (or `./target/debug/datdot-node --dev` if you didn't use a `--release` flag) runs a dev node. You can interact with this node by using the [Polkadot.js Apps UI](https://polkadot.js.org/apps/) - selecting "local node" as your endpoint in the settings page should connect you to your node; however, until you [specify the additional types](https://polkadot.js.org/api/start/types.extend.html#user-defined-types) in the developer tab, all functionality of the Apps UI will remain disabled.

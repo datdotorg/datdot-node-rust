@@ -7,7 +7,7 @@ const fs = require('fs');
 // Does not include system pallets because Apps already supports them.
 // Redundant with construct_runtime!
 const pallets = [
-  "dat_verify"
+  "datdot"
 ]
 
 // Types that are native to the runtime itself (ie come from lib.rs)
@@ -21,7 +21,7 @@ const runtimeOwnTypes = {
 let finalTypes = runtimeOwnTypes;
 let palletTypes;
 for (let dirname of pallets) {
-  let path = `../../pallets/${dirname}/types.json`;
+  let path = `datdot-node/pallets/${dirname}/types.json`;
   palletTypes = JSON.parse(fs.readFileSync(path, 'utf8'));
   finalTypes = {...finalTypes, ...palletTypes};
 }
