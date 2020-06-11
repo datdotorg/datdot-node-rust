@@ -26,7 +26,7 @@
     "hash_number": "u64",
     "total_length": "u64"
   },
-  "RootHashPayload": {
+  "TreeHashPayload": {
     "hash_type": "u8",
     "children": "Vec<ParentHashInRoot>"
   },
