@@ -396,8 +396,9 @@ decl_storage! {
 	trait Store for Module<T: Trait> as DatVerify {
 		// A vec of free indeces, with the last item usable for `len`
 		pub DatId get(fn next_id): DatIdVec;
-		// Each dat archive has a public key
-		pub DatKey get(fn public_key): map hasher(twox_64_concat) DatIdIndex => Public;
+		// Each dat archive has a public key, size, tree root hash, and signature
+		pub Dat get(fn public_key): map hasher(twox_64_concat) DatIdIndex => (Public, DatSize, H256, Signature);
+		pub DatIndex get(fn dat_index): map hasher(twox_64_concat) Public => DatIdIndex;
 		// Each dat archive has a tree size
 		// TODO: remove calls to this when expecting indeces
 		pub TreeSize get(fn tree_size): map hasher(twox_64_concat) Public => DatSize;
@@ -504,8 +505,10 @@ decl_module!{
 		#[weight = (100000, Pays::No)]
 		fn unregister_data(origin, index: DatIdIndex){
 			let account = ensure_signed(origin)?;
-			let pubkey = <DatKey>::get(index);
-			//only allow owner to unregister
+			let dat = <Dat>::get(index);
+			let pubkey = dat.0;
+			//only allow publisher to unregister
+			//todo, consider potential abuse here: (pinning others' content)
 			ensure!(
 				<UserRequestsMap<T>>::get(&pubkey) == account,
 				Error::<T>::PermissionError
@@ -523,10 +526,8 @@ decl_module!{
 				},
 				None => (),
 			}
-			<DatKey>::remove(&index);
+			<Dat>::remove(&index);
 			<UserRequestsMap<T>>::remove(&pubkey);
-			<TreeSize>::remove(&pubkey);
-			<MerkleRoot>::remove(&pubkey);
 			//inefficient - fixme later.
 			for (hoster_index, dat_index, _) in <HostedMap>::iter() {
 				if dat_index == index {
@@ -658,7 +659,7 @@ decl_module!{
 					.using_encoded(|mut b| u64::decode(&mut b))
 					.expect("hash must be of correct size; Qed");
 				let random_index = new_random % last_index;
-				let dat_pubkey = DatKey::get(&random_index);
+				let dat_pubkey = Dat::get(&random_index).0;
 				// DO SOMETHING HERE
 
 				// SOMETHING DONE
@@ -711,8 +712,9 @@ decl_module!{
 			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
 				.using_encoded(|mut b| u64::decode(&mut b))
 				.expect("hash must be of correct size; Qed");
-			let dat_pubkey = <DatKey>::get(dat_id);
-			let dat_tree_len = <TreeSize>::get(&dat_pubkey);
+			let dat = <Dat>::get(dat_id);
+			let dat_pubkey = dat.0;
+			let dat_tree_len = dat.1;
 			let mut random_leaf = 0;
 			if dat_tree_len != 0 { // avoid 0 divisor 
 				random_leaf = new_random % dat_tree_len;
@@ -942,9 +944,11 @@ impl<T: Trait> Module<T> {
 		}
 		native::info!("{:#?}", tree_size);
 		let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
-		match <MerkleRoot>::contains_key(&pubkey){
-			true => (),
-			false => {
+		<DatIndex>::try_mutate_exists(&pubkey, |index_opt| match index_opt.take() {
+			Some(index) => {
+				Ok((pubkey, tree_size, root_hash, sig))
+			},
+			None => {
 				native::info!("Dat Keys Vec: {:#?}", dat_vec);
 				match dat_vec.pop() {
 					Some(x) => {
@@ -964,12 +968,10 @@ impl<T: Trait> Module<T> {
 					},
 				}
 				//register new unknown dats
-				<DatKey>::insert(&lowest_free_index, &pubkey)
+				Err(<Dat>::insert(&lowest_free_index, (pubkey, tree_size, root_hash, sig)))
 			},
-		}
-		<MerkleRoot>::insert(&pubkey, (root_hash, sig));
+		});
 		<DatId>::put(dat_vec);
-		<TreeSize>::insert(&pubkey, tree_size);
 		<UserRequestsMap<T>>::insert(&pubkey, &account);
 		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
 	}
