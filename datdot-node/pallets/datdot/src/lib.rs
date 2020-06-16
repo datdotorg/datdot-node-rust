@@ -688,7 +688,19 @@ decl_module!{
 			attestation: Attestation
 		) {
 			let attestor = ensure_signed(origin)?;
-			//TODO
+			let attestor_index = <UserIndices<T>>::get(attestor);
+			let mut hosted_archive = <HostedMap>::get(hoster_index, dat_index);
+			let challenge = hosted_archive.state.get(&chunk_index);
+			match challenge {
+				Some(Challenge::Attesting(ats)) => {
+					let mut attestations = ats.clone();
+					attestations.completed.push((attestor_index, attestation));
+					hosted_archive.state.insert(chunk_index, Challenge::Attesting(attestations));
+					<HostedMap>::insert(hoster_index, dat_index, hosted_archive);
+				},
+				_ => fail!(Error::<T>::InvalidChallenge),
+
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
