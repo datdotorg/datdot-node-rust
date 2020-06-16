@@ -233,7 +233,9 @@ impl scheduler::Trait for Runtime {
 }
 
 parameter_types! {
-	pub const AttestorsPerChallenge: u32 = 3;
+	pub const AttestorsPerChallenge: u32 = 1;
+	pub const MinEncodersPerHoster: u32 = 1;
+	pub const MinHostersPerArchive: u32 = 1;
 	pub const ChallengeDelay: u32 = 5;
 }
 
@@ -243,6 +245,8 @@ impl dat_verify::Trait for Runtime {
 	type Randomness = RandomnessCollectiveFlip;
 	type ForceOrigin = dat_verify::EnsureSeeder<Runtime>;
 	type AttestorsPerChallenge = AttestorsPerChallenge;
+	type MinEncodersPerHoster = MinEncodersPerHoster;
+	type MinHostersPerArchive = MinHostersPerArchive;
 	type ChallengeDelay = ChallengeDelay;
 	type Proposal = Call;
 	type Scheduler = Scheduler;

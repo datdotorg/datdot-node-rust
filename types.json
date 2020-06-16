@@ -39,6 +39,17 @@
     "expected_friends": "Vec<u64>",
     "completed": "Vec<(u64, Attestation)>"
   },
+  "HostedArchive": {
+    "encoded": "Vec<(u64,(u64, u64))>",
+    "encoding": "Vec<(u64,(u64, u64))>",
+    "state": "BTreeMap<u64, Challenge>"
+  },
+  "Challenge": {
+    "_enum": {
+      "Active": "u64",
+      "Attesting": "ChallengeAttestation"
+    }
+  },
   "DatIdIndex": "u64",
   "DatIdVec": "Vec<DatIdIndex>",
   "UserIdIndex": "u64",

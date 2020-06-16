@@ -80,6 +80,8 @@ pub trait Trait: system::Trait{
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
 	type ForceOrigin: EnsureOrigin<<Self as system::Trait>::Origin>;
 	type AttestorsPerChallenge: Get<u32>;
+	type MinEncodersPerHoster: Get<u32>;
+	type MinHostersPerArchive: Get<u32>;
 	type ChallengeDelay: Get<u32>;
 	type Proposal: Parameter + Dispatchable<Origin=Self::Origin> + From<Call<Self>>;
 	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal>;
@@ -330,13 +332,44 @@ type DatIdVec = Vec<DatIdIndex>;
 type UserIdIndex = u64; 
 type DatSize = u64;
 
-/// encoded: SortedVec<(ChunkIndex, EncoderId)>,
+/// encoded: SortedVec<(EncoderId, (start chunk, end chunk))>,
 /// state: State,
 #[derive(Default, Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 struct HostedArchive {
-	encoded: Vec<(u64, u64)>,
-    encoding: Vec<(u64, u64)>,
+	encoded: Vec<(u64,(u64, u64))>,
+    encoding: Vec<(u64,(u64, u64))>,
     state: BTreeMap<u64, Challenge>, //K = chunk index
+}
+
+impl HostedArchive {
+	//is a given chunk already encoded?
+	fn is_encoded(&self, chunk_to_check: u64) -> bool{
+		let temp_self: &mut HostedArchive = &mut self.clone();
+		temp_self.sort();
+		temp_self.encoded.iter().find(|x|{
+			(x.1).0<chunk_to_check&&chunk_to_check<(x.1).1
+		}).is_some()
+	}
+
+	fn is_sorted(&self) -> bool {
+		let mut encoded_last = 0;
+		let mut encoding_last = 0;
+		!self.encoded.iter().find_map(|encoded_current|{
+			let result = encoded_last > (encoded_current.1).0;
+			encoded_last = (encoded_current.1).0;
+			Some(result)
+		}).is_some()&&!self.encoding.iter().find_map(|encoding_current|{
+			let result = encoding_last > (encoding_current.1).0;
+			encoding_last = (encoding_current.1).0;
+			Some(result)
+		}).is_some()
+	}
+
+	fn sort(&mut self) -> &mut Self {
+		self.encoded.sort_unstable_by_key(|x|(x.1).0);
+		self.encoding.sort_unstable_by_key(|x|(x.1).0);
+		return self;
+	}
 }
 
 ///	Active(blockNumber),
@@ -345,6 +378,27 @@ struct HostedArchive {
 enum Challenge {
 	Active(u64),
 	Attesting(ChallengeAttestations),
+}
+
+#[derive(Decode, PartialEq, Eq, PartialOrd, Ord, Encode, Clone, RuntimeDebug)]
+enum Role {
+	Hoster,
+	Encoder,
+	Attestor,
+	Publisher,
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct User {
+	roles: BTreeMap<Role, bool>,
+}
+
+impl Default for User {
+	fn default() -> Self { 
+		User {
+			roles: BTreeMap::new()
+		}
+	}
 }
 
 decl_event!(
@@ -359,9 +413,10 @@ decl_event!(
 		ChallengeFailed(u64, u64),
 		NewPin(u64, u64, u64),
 		Attest(AccountId, Attestation),
-		AttestPhase(u64, u64, ChallengeAttestations),
+		AttestPhase(u64, u64, Vec<u64>),
 		//user index, dat index
 		ChallengeSuccess(u64, u64),
+		HostingStarted(u64, u64),
 	}
 );
 
@@ -387,6 +442,8 @@ decl_error! {
 		InvalidTreeSize,
 		/// hoster/hosted pair does not exist
 		InvalidChallenge,
+		/// encoding not complete for chunk
+		IncompleteEncoding,
     }
 }
 
@@ -407,21 +464,13 @@ decl_storage! {
 		// vec of occupied user indeces for when users are removed.
 		pub UsersCount: Vec<u64>;
 		// users are put into an "array"
-		pub Users get(fn user): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
+		pub Users get(fn user): map hasher(twox_64_concat) UserIdIndex => (T::AccountId, User);
 		pub UserIndices get(fn user_id): map hasher(twox_64_concat) T::AccountId => UserIdIndex;
 		// each user has a mapping and vec of dats they want seeded
 		pub UserRequestsMap: map hasher(twox_64_concat) Public => T::AccountId;
 		pub UserIndex: u64;
 		// hoster, archive => HostedArchive
 		pub HostedMap: double_map hasher(twox_64_concat) u64, hasher(twox_64_concat) u64 => HostedArchive;
-		//Attestors
-		pub Attestors get(fn atts): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
-		pub AttestorsCount: Vec<u64>;
-		pub ActiveAttestors: Vec<u64>;
-		//Encoders
-		pub Encoders get(fn encs): map hasher(twox_64_concat) UserIdIndex => T::AccountId;
-		pub EncodersCount: Vec<u64>;
-		pub ActiveEncoders: Vec<u64>;
 		pub Nonce: u64;
 	}
 }
@@ -433,6 +482,62 @@ decl_module!{
 		fn deposit_event() = default;
 		const AttestorsPerChallenge: u32 = T::AttestorsPerChallenge::get();
 		const ChallengeDelay: u32 = T::ChallengeDelay::get();
+
+		
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn modify_roles(origin, user: User){
+			let account = ensure_signed(origin)?;
+			//currently hacky/slow TODO: refactor
+			for (role, value) in user.roles.iter(){
+				Self::modify_role(account.clone(), role.clone(), value.clone());
+			}
+			Self::begin_hosting_if_balanced(None, None);
+		}
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn register_hoster(origin){
+			let account = ensure_signed(origin)?;
+			Self::begin_hosting_if_balanced(
+				Self::modify_role(account.clone(), Role::Hoster, true).ok(),
+				None
+			);
+		}
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn unregister_hoster(origin){
+			let account = ensure_signed(origin)?;
+			//logic
+			Self::modify_role(account.clone(), Role::Hoster, false);
+		}
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn register_attestor(origin){
+			let account = ensure_signed(origin)?;
+			Self::modify_role(account.clone(), Role::Attestor, true);
+			Self::begin_hosting_if_balanced(None, None);
+		}
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn unregister_attestor(origin){
+			let account = ensure_signed(origin)?;
+			//logic
+			Self::modify_role(account.clone(), Role::Attestor, false);
+		}
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn register_encoder(origin){
+			let account = ensure_signed(origin)?;
+			Self::modify_role(account.clone(), Role::Encoder, true);
+			Self::begin_hosting_if_balanced(None, None);
+		}
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn unregister_encoder(origin){
+			let account = ensure_signed(origin)?;
+			//logic
+			Self::modify_role(account.clone(), Role::Encoder, false);
+		}
+
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn force_clear_challenge(origin, user_index: u64, dat_index: u64, chunk_index: u64){
@@ -452,7 +557,7 @@ decl_module!{
 			let user_index = <UserIndices<T>>::get(&account);
 			
 			// TODO - verify proof!
-			if let Some(challenge_attestors) = Self::update_attestors_for(user_index, dat_index, chunk_index){
+			if let Some((_, challenge_attestors)) = Self::update_attestors_for(user_index, dat_index, chunk_index){
 				Self::deposit_event(RawEvent::AttestPhase(user_index, dat_index, challenge_attestors));
 				Self::clear_challenge(user_index, dat_index, chunk_index);
 			} else {
@@ -527,6 +632,7 @@ decl_module!{
 				None => (),
 			}
 			<Dat>::remove(&index);
+			<DatIndex>::remove(&pubkey);
 			<UserRequestsMap<T>>::remove(&pubkey);
 			//inefficient - fixme later.
 			for (hoster_index, dat_index, _) in <HostedMap>::iter() {
@@ -539,66 +645,38 @@ decl_module!{
 
 
 		#[weight = (100000, Pays::No)]
-		fn register_attestor(origin){
+		fn register_encoding(origin, hoster_index: u64, dat_id: u64, start: u64, end: u64){
 			let account = ensure_signed(origin)?;
-			// if already active, stop here. (if any active attestor matches. shortcircuit)
-			// super inefficient worstcase, needs refactor at some point.
-			let mut all_attestors = <Attestors<T>>::iter().map(|(_,y)| y);
-			if !<ActiveAttestors>::get().iter().any(|_|{
-				all_attestors.any(|y| y == account)
-			}){
-				let mut att_count = <AttestorsCount>::get();
-				let user_index_option = att_count.pop();
-				let current_user_index = match user_index_option {
-					Some(x) => x,
-					None => 0,
-				};
-				let i = current_user_index.saturating_add(1);
-				<Attestors<T>>::insert(&i, &account);
-				let mut atts = <AttestorsCount>::get();
-				atts.push(i);
-				<AttestorsCount>::put(atts);
-				let mut att_vec = <ActiveAttestors>::get();
-				att_vec.push(i);
-				att_vec.sort_unstable();
-				att_vec.dedup();
-				native::info!("registerAttestor; att_vec: {:#?}", att_vec);
-				<ActiveAttestors>::put(att_vec);
-			}
-		}
-
-		#[weight = (100000, Pays::No)]
-		fn register_encoder(origin){
-			let account = ensure_signed(origin)?;
-
-		}
-
-		#[weight = (100000, Pays::No)]
-		fn unregister_encoder(origin){
-			let account = ensure_signed(origin)?;
-
-		}
-
-		#[weight = (100000, Pays::No)]
-		fn register_encoding(origin, hoster_id: u64, dat_id: u64, start: u64, range: u64){
-			let account = ensure_signed(origin)?;
-			// TODO: register encoding and begin challenge phase
-			// TODO: selected_hoster AND selected_encoder must register_encoding
+			let account_index = <UserIndices<T>>::get(&account);
+			//TODO search encoding/encoded and insert new tuple in corrent index
+			let mut hosted_archive : HostedArchive = <HostedMap>::get(hoster_index, dat_id);
+			hosted_archive.encoding.push((account_index, (start, end)));
+			<HostedMap>::insert(hoster_index, dat_id, hosted_archive);
 		}
 
 
 		#[weight = (100000, Pays::No)]
-		fn refute_encoding(origin, archive: u64, index: u64, encoded: Vec<u8>, proof: Vec<u8>){
-			//TODO
+		fn refute_encoding(origin, dat_id: u64, index: u64, encoded: Vec<u8>, proof: Vec<u8>){
+			let hoster = ensure_signed(origin)?;
+			let hoster_index = <UserIndices<T>>::get(&hoster);
+			//TODO verify counterclaim
 			//remove an invalid encoding if `encoded` is 
-			//signed by `encoder` and `proof` does not match encoded chunk. 
+			//signed by `encoder` and `proof` does not match encoded chunk.
+			let mut hosted_archive : HostedArchive = <HostedMap>::get(hoster_index, dat_id);
+			//FIXME, if you create u32::MAX items, you brick a hoster.
+			hosted_archive.encoding.remove(index.try_into().unwrap());
+			<HostedMap>::insert(hoster_index, dat_id, hosted_archive);
 		}
 
 		#[weight = (100000, Pays::No)]
-		fn confirm_hosting(origin, archive: u64){
-			//TODO
-			//move a valid encoding to `encoded` if `encoded` is 
-			//signed by `encoder` and `proof` does match encoded chunk. 
+		fn confirm_hosting(origin, dat_id: u64, index: u64){
+			let hoster = ensure_signed(origin)?;
+			let hoster_index = <UserIndices<T>>::get(&hoster);
+			let mut hosted_archive : HostedArchive = <HostedMap>::get(hoster_index, dat_id);
+			let encoded = hosted_archive.encoding.remove(index.try_into().unwrap());
+			hosted_archive.encoded.push(encoded);
+			<HostedMap>::insert(hoster_index, dat_id, hosted_archive);
+			Self::deposit_event(RawEvent::HostingStarted(hoster_index, dat_id));
 		}
 
 		#[weight = (100000, Pays::No)]
@@ -610,103 +688,12 @@ decl_module!{
 			attestation: Attestation
 		) {
 			let attestor = ensure_signed(origin)?;
+			//TODO
 		}
-
-		#[weight = (100000, Pays::No)]
-		fn unregister_attestor(origin){
-			let account = ensure_signed(origin)?;
-			for (user_index, user_account) in <Attestors<T>>::iter(){
-				if user_account == account {
-					<Attestors<T>>::remove(user_index);
-					let mut user_indexes = <AttestorsCount>::get();
-					match user_indexes.binary_search(&user_index){
-						Ok(i) => {
-							user_indexes.remove(i);
-							<ActiveAttestors>::mutate(|att_vec|{
-								match att_vec.binary_search(&user_index){
-									Ok(e) => {
-										att_vec.remove(e);
-									},
-									_ => (),
-								}
-								att_vec.sort_unstable();
-								att_vec.dedup();
-							});
-						},
-						_ => (),
-					}
-					if user_indexes.len() > 0 {
-						<AttestorsCount>::put(user_indexes);
-					} else {
-						<AttestorsCount>::kill();
-					}
-				}
-			}
-		}
-
-		// User requests a dat for them to pin. FIXME: May return a dat they are already pinning.
-		#[weight = (100000, Pays::No)]
-		fn register_seeder(origin) {
-			//TODO: bias towards unseeded dats and high incentive
-			let account = ensure_signed(origin)?;
-			let dat_vec = <DatId>::get();
-			let last = dat_vec.last();
-			native::info!("Last Dat Index: {:#?}", last);
-			match last {
-				Some(last_index) => {
-				let nonce = Self::unique_nonce();
-				let new_random = (T::Randomness::random(b"dat_verify_register"), &nonce, &account)
-					.using_encoded(|mut b| u64::decode(&mut b))
-					.expect("hash must be of correct size; Qed");
-				let random_index = new_random % last_index;
-				let dat_pubkey = Dat::get(&random_index).0;
-				// DO SOMETHING HERE
-
-				// SOMETHING DONE
-				let user_index;
-				let user_exists = <UserIndices<T>>::contains_key(&account);
-				if !user_exists {
-					let user_index_option = <UsersCount>::get().pop();
-					let current_user_index = match user_index_option {
-						Some(x) => {
-							x
-						},
-						None => 0,
-					};
-					//maybe this should panic instead of saturate
-					user_index = current_user_index.saturating_add(1);
-					let mut users = <UsersCount>::get();
-					users.push(user_index);
-					<UsersCount>::put(users);
-					<UserIndices<T>>::insert(&account, user_index);
-				} else {
-					user_index = <UserIndices<T>>::get(&account);
-				}
-				<Users<T>>::insert(&user_index, &account);
-				native::info!("NewPin; Account: {:#?}", account);
-				native::info!("NewPin; Pubkey: {:#?}", dat_pubkey);
-				let publisher_index = <UserIndices<T>>::get(<UserRequestsMap<T>>::get(&dat_pubkey));
-				Self::deposit_event(RawEvent::NewPin(publisher_index, user_index, random_index));
-				},
-				None => {
-					
-				},
-			}
-		} 
-
-
-		#[weight = (100000, Pays::No)]
-		fn unregister_seeder(origin) {
-			let account = ensure_signed(origin)?;
-			let user_id = <UserIndices<T>>::get(account);	
-			<HostedMap>::remove_prefix(user_id);
-			//maybe there should be a penalty here?
-		}
-
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_challenge(_origin, selected_user: u64, dat_id: u64){
-			let hosted_map = <HostedMap>::get(selected_user, dat_id);
+			let mut hosted_map : HostedArchive = <HostedMap>::get(selected_user, dat_id);
 			// TODO: verify has encoded and block if encoding is not complete.
 			let nonce = Self::unique_nonce();
 			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
@@ -719,9 +706,16 @@ decl_module!{
 			if dat_tree_len != 0 { // avoid 0 divisor 
 				random_leaf = new_random % dat_tree_len;
 			}
-			let selected_user_key = <Users<T>>::get(&selected_user);
-			let challenge_length = T::ChallengeDelay::get();
-			Self::deposit_event(RawEvent::Challenge(selected_user_key, dat_pubkey));
+			let selected_user_key = <Users<T>>::get(&selected_user).0;
+			let challenge_length : u64 = T::ChallengeDelay::get().into();
+			let now : u64 = system::Module::<T>::block_number().try_into().ok().unwrap().try_into().unwrap();
+			if hosted_map.is_encoded(random_leaf){
+				hosted_map.state.insert(random_leaf, Challenge::Active(now+challenge_length));
+				<HostedMap>::insert(selected_user, dat_id, hosted_map);
+				Self::deposit_event(RawEvent::Challenge(selected_user_key, dat_pubkey));
+			} else {
+				fail!(Error::<T>::IncompleteEncoding);
+			}
 		}
 
 		#[weight = (1000000, Operational, Pays::No)] //todo
@@ -825,7 +819,7 @@ impl<T: Trait> Module<T> {
 		hoster_index: u64,
 		dat_index: u64,
 		chunk_index: u64,
-		) -> Option<ChallengeAttestations> {
+		) -> Option<(ChallengeAttestations, Vec<u64>)> {
 		let mut hosted : HostedArchive = <HostedMap>::get(hoster_index, dat_index);
 		let attestations : ChallengeAttestations;
 		let challenge = hosted.state.get(&chunk_index);
@@ -850,7 +844,9 @@ impl<T: Trait> Module<T> {
 						completed: attestors.completed.clone(),
 					};
 				}
-				Some(attestations)
+				let mut all_attestors: Vec<u64> = attestations.expected_attestors.clone();
+				all_attestors.append(&mut attestations.expected_friends.clone());
+				Some((attestations, all_attestors))
 			},
 			Some(Challenge::Active(_)) => {
 				let mut expected_attestors = 
@@ -864,14 +860,16 @@ impl<T: Trait> Module<T> {
 				};
 				hosted.state.insert(chunk_index, Challenge::Attesting(attestations.clone()));
 				<HostedMap>::insert(hoster_index, dat_index, hosted);
-				Some(attestations)
+				let mut all_attestors: Vec<u64> = attestations.expected_attestors.clone();
+				all_attestors.append(&mut attestations.expected_friends.clone());
+				Some((attestations, all_attestors))
 			},
 			_ => None,
 		}
 	}
 
 	fn get_attestation_status(hoster_index: u64, dat_index: u64, chunk_index: u64) -> Option<bool> {
-		if let Some(state) = Self::update_attestors_for( 
+		if let Some((state, _)) = Self::update_attestors_for( 
 			hoster_index,
 			dat_index,
 			chunk_index
@@ -944,9 +942,10 @@ impl<T: Trait> Module<T> {
 		}
 		native::info!("{:#?}", tree_size);
 		let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
-		<DatIndex>::try_mutate_exists(&pubkey, |index_opt| match index_opt.take() {
-			Some(index) => {
-				Ok((pubkey, tree_size, root_hash, sig))
+		let existed =
+			<DatIndex>::try_mutate_exists(&pubkey, |index_opt| match index_opt.take() {
+			Some(_) => {
+				Err(())
 			},
 			None => {
 				native::info!("Dat Keys Vec: {:#?}", dat_vec);
@@ -968,12 +967,14 @@ impl<T: Trait> Module<T> {
 					},
 				}
 				//register new unknown dats
-				Err(<Dat>::insert(&lowest_free_index, (pubkey, tree_size, root_hash, sig)))
+				*index_opt = Some(lowest_free_index);
+				Ok(<Dat>::insert(&lowest_free_index, (pubkey, tree_size, root_hash, sig)))
 			},
 		});
 		<DatId>::put(dat_vec);
 		<UserRequestsMap<T>>::insert(&pubkey, &account);
 		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
+		Self::begin_hosting_if_balanced(None, Some(lowest_free_index))
 	}
 
 	//borrowing from society pallet ---
@@ -999,25 +1000,211 @@ impl<T: Trait> Module<T> {
 		nonce
 	}
 
+	
+
 	fn get_random_attestors(hoster_index: u64, dat_index: u64) -> Vec<u64> {
-		let members : Vec<u64> = <ActiveAttestors>::get();
+		(hoster_index, dat_index).using_encoded(|influence|
+			Self::get_random_of_role(
+				influence,
+				&Role::Attestor, 
+				T::AttestorsPerChallenge::get()
+			)
+		)	
+	}
+
+	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<u64> {
+		let members : Vec<u64> = <Users<T>>::iter().filter_map(|x|{
+			if *(x.1).1.roles
+			.get(role)
+			.unwrap_or_else(||&false) {
+				Some(x.0)
+			} else {
+				None
+			}
+		}).collect();
 		match members.len() {
 			0 => members,
 			_ => {
 				let nonce : u64 = Self::unique_nonce();
 				let mut random_select: Vec<u64> = Vec::new();
 				// added indeces to seed in order to ensure challenges get unique randomness.
-				let seed = (nonce, hoster_index, dat_index, T::Randomness::random(b"dat_random_attestors"))
+				let seed = (nonce, influence, T::Randomness::random(b"dat_random_attestors"))
 					.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
 					.expect("input is padded with zeroes; qed");
 				let mut rng = ChaChaRng::from_seed(seed);
 				let pick_attestor = |_| Self::pick_item(&mut rng, &members[..]).expect("exited if members empty; qed");
-				for attestor in (0..T::AttestorsPerChallenge::get()).map(pick_attestor){
+				for attestor in (0..count).map(pick_attestor){
 					random_select.push(*attestor);
 				}
 				random_select
 			},
 		}
+	}
+
+	fn get_random_archive(influence: &[u8], count: u32) -> Vec<u64> {
+		let members : Vec<u64> = <DatIndex>::iter().map(|(_,y)|y).collect();
+		match members.len() {
+			0 => members,
+			_ => {
+				let nonce : u64 = Self::unique_nonce();
+				let mut random_select: Vec<u64> = Vec::new();
+				// added indeces to seed in order to ensure challenges get unique randomness.
+				let seed = (nonce, influence, T::Randomness::random(b"dat_random_attestors"))
+					.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
+					.expect("input is padded with zeroes; qed");
+				let mut rng = ChaChaRng::from_seed(seed);
+				let pick_attestor = |_| Self::pick_item(&mut rng, &members[..]).expect("exited if members empty; qed");
+				for attestor in (0..count).map(pick_attestor){
+					random_select.push(*attestor);
+				}
+				random_select
+			},
+		}
+	}
+
+
+	fn begin_hosting_if_balanced(preferred_host: Option<u64>, preferred_archive: Option<u64>){
+		let mut encoder_count: u64 = 0;
+		let mut attestor_count: u64 = 0;
+		let mut hoster_count: u64 = 0;
+		let archive_count = <UserRequestsMap<T>>::iter().count();
+		for (_index, (_id, user)) in <Users<T>>::iter(){
+			for (role, value) in user.roles.iter() {
+				if *value {
+					match role {
+						Role::Attestor => attestor_count += 1,
+						Role::Encoder => encoder_count += 1,
+						Role::Hoster => hoster_count += 1,
+						_ => (),
+					}
+				}
+			}
+			if  
+			encoder_count>T::MinEncodersPerHoster::get().into() &&
+			attestor_count>T::AttestorsPerChallenge::get().into() &&
+			hoster_count>T::MinHostersPerArchive::get().into() &&
+			archive_count>0{
+				break;
+			}
+		}
+		Self::begin_hosting(preferred_host, preferred_archive);
+	}
+
+	// currently emits way too many challenges everytime someone registers for a role after min is achieved 
+	// perhaps consider capping/rebalancing etc.
+	fn begin_hosting(preferred_host: Option<u64>, preferred_archive: Option<u64>){
+		//(encoderID, hosterID, datID)
+		let mut pins: Vec<(u64, u64, u64)> = Vec::new();
+		Self::unique_nonce().using_encoded(|x|{
+		let random_encoders = Self::get_random_of_role(
+			x, 
+			&Role::Encoder, 
+			T::MinEncodersPerHoster::get()
+		); 
+		match (preferred_host,preferred_archive) {
+			(Some(host),Some(archive)) => {
+				for encoder in random_encoders {
+					pins.push((encoder, host, archive));
+				}
+			},
+			(Some(host), None) => {
+				host.using_encoded(|influence|{
+					let archives =  Self::get_random_archive(influence, 1);
+					for encoder in random_encoders {
+						for &archive in &archives {
+							pins.push((encoder, host, archive));
+						}
+					}
+				});
+			},
+			(None, Some(archive)) => {
+				archive.using_encoded(|influence|{
+					let hosts = Self::get_random_of_role(
+						influence,
+						&Role::Hoster,
+						T::MinHostersPerArchive::get()
+					);
+					for encoder in random_encoders {
+						for &host in &hosts {
+							pins.push((encoder, host, archive));
+						}
+					}
+				});
+			},
+			(None,None) => {
+				let hosts = Self::get_random_of_role(
+					x,
+					&Role::Hoster,
+					T::MinHostersPerArchive::get()
+				);
+				let archives =  Self::get_random_archive(
+					x, 
+					1
+				);
+				for &host in &hosts {
+					for &archive in &archives {
+						for &encoder in &random_encoders {
+							pins.push((encoder, host, archive));
+						}
+					}
+				}
+			}
+		}});
+		for pin in pins {
+			Self::deposit_event(RawEvent::NewPin(pin.0, pin.1, pin.2));
+		}
+	}
+
+	fn modify_role(account: T::AccountId, role: Role, value: bool) -> Result<UserIdIndex, ()> {
+		let user_index: UserIdIndex;
+		let user_exists = <UserIndices<T>>::contains_key(&account);
+		if !user_exists {
+			let user_index_option = <UsersCount>::get().pop();
+			let current_user_index = match user_index_option {
+				Some(x) => {
+					x
+				},
+				None => 0,
+			};
+			//maybe this should panic instead of saturate
+			user_index = current_user_index.saturating_add(1);
+			let mut users = <UsersCount>::get();
+			users.push(user_index);
+			<UsersCount>::put(users);
+			<UserIndices<T>>::insert(&account, user_index);
+		} else {
+			user_index = <UserIndices<T>>::get(&account);
+		}
+		<Users<T>>::try_mutate_exists(&user_index,|x|{
+			match x.take() {
+				Some((this_account, user)) => {
+					let mut this_user = user.clone();
+					if value {
+						this_user.roles.insert(role, value);
+						*x = Some((this_account, this_user));
+					} else {
+						if this_user.roles.iter().find(|y|*y.1).is_some() {
+							*x = Some((this_account, this_user))
+						} else {
+							*x = None
+						}
+					}
+					Ok(user_index)
+				},
+				_ => {
+					if value {
+						let mut this_roles : User = User::default();
+						this_roles.roles.insert(role, value);
+						*x = Some((account, this_roles));
+						Ok(user_index)
+					} else {
+						<UserIndices<T>>::remove(&account);
+						Err(())
+					}
+				}
+			}
+		})
+		
 	}
 
 }
