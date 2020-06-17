@@ -7,7 +7,7 @@ join our [telegram](https://t.me/joinchat/CgTftxXJvp6iYayqDjP7lQ) or [gitter](ht
 
 datdot code is currently located in `pallets/datdot`.
 
-the template node uses BABE consensus, but most unneeded features removed, including tx fees, but `pallet-datdot` added.
+the template node uses instant-seal consensus, and a minimal runtime.
 
 ### Building
 
@@ -17,7 +17,7 @@ to build the datdot dev runtime, run:
 
 to build the test node, run:
 
-`cargo build -p datdot-node`
+`cargo build -p datdot-node` 
 
 add the `--release` flag to either of those commands to create a release build - debug and release builds will be located in `./target/release` or `./target/debug` respectively.
 
@@ -34,6 +34,8 @@ Performing this requires each pallet defined in `aggregate_types.js` have their 
 currently, executing `./target/release/datdot-node --dev` (or `./target/debug/datdot-node --dev` if you didn't use a `--release` flag) runs a dev node. You can interact with this node by using the [Polkadot.js Apps UI](https://polkadot.js.org/apps/) - selecting "local node" as your endpoint in the settings page should connect you to your node; however, until you [specify the additional types](https://polkadot.js.org/api/start/types.extend.html#user-defined-types) in the developer tab, all functionality of the Apps UI will remain disabled.
 
 Optionally, additionally running with `--execution Native` (case sensitive) will allow you to see more verbose logging from parts of the runtime using `native::info!(...)` calls.
+
+NOTE: due to the nature of the instantseal consensus used in this node implementation, there is no concept of finality.
 
 ``` 
 

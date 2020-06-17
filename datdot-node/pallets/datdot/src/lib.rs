@@ -234,7 +234,7 @@ pub struct TreeHashPayload {
 trait HashPayload where Self: Sized + Encode {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
-			native::info!("Hash Payload: {:x?}", b);
+			native::debug!("Hash Payload: {:x?}", b);
 			blake2_256(b).into()
 		})
 	}
@@ -245,7 +245,7 @@ impl HashPayload for TreeHashPayload {
 	//made using trial-and-error. lots of memcpy. loop. kill it with fire.
 	fn hash(&self) -> H256 {
 		self.using_encoded(|dirtybits|{
-			native::info!("Root Hash Dirty Payload [{:#?}]: {:x?}", dirtybits.len(), dirtybits);
+			native::debug!("Root Hash Dirty Payload [{:#?}]: {:x?}", dirtybits.len(), dirtybits);
 			let dirtycopy = dirtybits.to_vec();
 			let mut x = 2;
 			let mut bits : Vec<u8> = Vec::new();
@@ -270,7 +270,7 @@ impl HashPayload for TreeHashPayload {
 					None => break,
 				}
 			};
-			native::info!("Root Hash Clean Payload [{:#?}]: {:x?}", bits.len(), bits);
+			native::debug!("Root Hash Clean Payload [{:#?}]: {:x?}", bits.len(), bits);
 			blake2_256(bits.as_slice()).into()
 		})
 	}
@@ -278,7 +278,7 @@ impl HashPayload for TreeHashPayload {
 impl HashPayload for ParentHashPayload {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
-			native::info!("Parent Hash Payload Dirty [{:x?}]: {:x?}", b.len(), b);
+			native::debug!("Parent Hash Payload Dirty [{:x?}]: {:x?}", b.len(), b);
 			let dirtycopy = b.to_vec();
 			let mut cleanbits: Vec<u8> = Vec::new();
 			let hash_type = dirtycopy.get(0..1).expect("");
@@ -286,10 +286,10 @@ impl HashPayload for ParentHashPayload {
 			total_length.copy_from_slice(dirtycopy.get(1..9).expect(""));
 			total_length.reverse();
 
-			native::info!("Child nodes raw: {:x?}", dirtycopy.get(9..).expect(""));
+			native::debug!("Child nodes raw: {:x?}", dirtycopy.get(9..).expect(""));
 			cleanbits.extend_from_slice(hash_type);
 			cleanbits.extend_from_slice(total_length);
-			native::info!("Parent Hash Payload [{:x?}]: {:x?}", b.len(), b);
+			native::debug!("Parent Hash Payload [{:x?}]: {:x?}", b.len(), b);
 			blake2_256(cleanbits.as_slice()).into()
 		})
 	}
@@ -297,7 +297,7 @@ impl HashPayload for ParentHashPayload {
 impl HashPayload for ChunkHashPayload {
 	fn hash(&self) -> H256 {
 		self.using_encoded(|b|{
-			native::info!("Chunk Hash Payload: {:x?}", b);
+			native::debug!("Chunk Hash Payload: {:x?}", b);
 			let dirtycopy = b.to_vec();
 			let mut cleanbits: Vec<u8> = Vec::new();
 			let hash_type = dirtycopy.get(0..1).expect("");
@@ -305,7 +305,7 @@ impl HashPayload for ChunkHashPayload {
 			total_length.copy_from_slice(dirtycopy.get(1..9).expect(""));
 			total_length.reverse();
 
-			native::info!("Child nodes raw: {:x?}", dirtycopy.get(9..).expect(""));
+			native::debug!("Child nodes raw: {:x?}", dirtycopy.get(9..).expect(""));
 			cleanbits.extend_from_slice(hash_type);
 			cleanbits.extend_from_slice(total_length);
 			blake2_256(cleanbits.as_slice()).into()
@@ -335,17 +335,16 @@ type DatSize = u64;
 /// encoded: SortedVec<(EncoderId, (start chunk, end chunk))>,
 /// state: State,
 #[derive(Default, Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-struct HostedArchive {
+struct HostedArchive<BlockNumber: Clone> {
 	encoded: Vec<(u64,(u64, u64))>,
     encoding: Vec<(u64,(u64, u64))>,
-    state: BTreeMap<u64, Challenge>, //K = chunk index
+    state: BTreeMap<u64, Challenge<BlockNumber>>, //K = chunk index
 }
 
-impl HostedArchive {
+impl<BlockNumber: Clone> HostedArchive<BlockNumber> {
 	//is a given chunk already encoded?
 	fn is_encoded(&self, chunk_to_check: u64) -> bool{
-		let temp_self: &mut HostedArchive = &mut self.clone();
-		temp_self.sort();
+		let temp_self = self.clone_sorted();
 		temp_self.encoded.iter().find(|x|{
 			(x.1).0<chunk_to_check&&chunk_to_check<(x.1).1
 		}).is_some()
@@ -365,18 +364,24 @@ impl HostedArchive {
 		}).is_some()
 	}
 
-	fn sort(&mut self) -> &mut Self {
-		self.encoded.sort_unstable_by_key(|x|(x.1).0);
-		self.encoding.sort_unstable_by_key(|x|(x.1).0);
-		return self;
+	fn clone_sorted(&self) -> Self {
+		let mut encoded_sorted = self.encoded.clone();
+		let mut encoding_sorted = self.encoding.clone();
+		encoded_sorted.sort_unstable_by_key(|x|(x.1).0);
+		encoding_sorted.sort_unstable_by_key(|x|(x.1).0);
+		return Self {
+			encoded: encoded_sorted,
+			encoding: encoding_sorted,
+			state: self.state.clone(),
+		}
 	}
 }
 
 ///	Active(blockNumber),
 ///	Attesting(ChallengeAttestations),
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-enum Challenge {
-	Active(u64),
+#[derive(Decode, PartialEq, Eq, Clone, Encode, RuntimeDebug)]
+enum Challenge<BlockNumber: Clone> {
+	Active(BlockNumber),
 	Attesting(ChallengeAttestations),
 }
 
@@ -470,7 +475,7 @@ decl_storage! {
 		pub UserRequestsMap: map hasher(twox_64_concat) Public => T::AccountId;
 		pub UserIndex: u64;
 		// hoster, archive => HostedArchive
-		pub HostedMap: double_map hasher(twox_64_concat) u64, hasher(twox_64_concat) u64 => HostedArchive;
+		pub HostedMap: double_map hasher(twox_64_concat) u64, hasher(twox_64_concat) u64 => HostedArchive<T::BlockNumber>;
 		pub Nonce: u64;
 	}
 }
@@ -557,7 +562,7 @@ decl_module!{
 			let user_index = <UserIndices<T>>::get(&account);
 			
 			// TODO - verify proof!
-			if let Some((_, challenge_attestors)) = Self::update_attestors_for(user_index, dat_index, chunk_index){
+			if let Some((_, challenge_attestors)) = Self::update_attestors_for(user_index, dat_index, chunk_index, true){
 				Self::deposit_event(RawEvent::AttestPhase(user_index, dat_index, challenge_attestors));
 				Self::clear_challenge(user_index, dat_index, chunk_index);
 			} else {
@@ -578,8 +583,6 @@ decl_module!{
 			};
 			let root_hash = root_hash_sanitized_payload.hash();
 			let sig = Signature::from_h512(merkle_root.2);
-			native::info!("Register Data Merkle Root: {:x?}", merkle_root);
-			native::info!("Register Data Merkle Root Hash: {:x?}", root_hash);
 			//FIXME: we don't currently verify if we are updating to a newer root from an older one.
 			//verify the signature
 			ensure!(
@@ -589,7 +592,8 @@ decl_module!{
 				),
 				Error::<T>::VerificationFailed
 			);
-			Self::forced_register_data(account, merkle_root)
+			Self::forced_register_data(account, merkle_root).ok();
+			native::info!("register_data completed");
 		}
 
 		//debug method when you don't have valid data for register_data, no validity checks, only root.
@@ -603,7 +607,7 @@ decl_module!{
 			T::ForceOrigin::try_origin(origin)
 				.map(|_| ())
 				.or_else(ensure_root)?;
-			Self::forced_register_data(account, merkle_root)
+			Self::forced_register_data(account, merkle_root).ok();
 		}
 
 		//user stops requesting others pin their data
@@ -635,9 +639,9 @@ decl_module!{
 			<DatIndex>::remove(&pubkey);
 			<UserRequestsMap<T>>::remove(&pubkey);
 			//inefficient - fixme later.
-			for (hoster_index, dat_index, _) in <HostedMap>::iter() {
+			for (hoster_index, dat_index, _) in <HostedMap<T>>::iter() {
 				if dat_index == index {
-					<HostedMap>::remove(hoster_index, dat_index);
+					<HostedMap<T>>::remove(hoster_index, dat_index);
 				}
 			}
 			Self::deposit_event(RawEvent::SomethingUnstored(index, pubkey));
@@ -649,9 +653,9 @@ decl_module!{
 			let account = ensure_signed(origin)?;
 			let account_index = <UserIndices<T>>::get(&account);
 			//TODO search encoding/encoded and insert new tuple in corrent index
-			let mut hosted_archive : HostedArchive = <HostedMap>::get(hoster_index, dat_id);
+			let mut hosted_archive : HostedArchive<T::BlockNumber> = <HostedMap<T>>::get(hoster_index, dat_id);
 			hosted_archive.encoding.push((account_index, (start, end)));
-			<HostedMap>::insert(hoster_index, dat_id, hosted_archive);
+			<HostedMap<T>>::insert(hoster_index, dat_id, hosted_archive);
 		}
 
 
@@ -662,20 +666,20 @@ decl_module!{
 			//TODO verify counterclaim
 			//remove an invalid encoding if `encoded` is 
 			//signed by `encoder` and `proof` does not match encoded chunk.
-			let mut hosted_archive : HostedArchive = <HostedMap>::get(hoster_index, dat_id);
+			let mut hosted_archive : HostedArchive<T::BlockNumber> = <HostedMap<T>>::get(hoster_index, dat_id);
 			//FIXME, if you create u32::MAX items, you brick a hoster.
 			hosted_archive.encoding.remove(index.try_into().unwrap());
-			<HostedMap>::insert(hoster_index, dat_id, hosted_archive);
+			<HostedMap<T>>::insert(hoster_index, dat_id, hosted_archive);
 		}
 
 		#[weight = (100000, Pays::No)]
 		fn confirm_hosting(origin, dat_id: u64, index: u64){
 			let hoster = ensure_signed(origin)?;
 			let hoster_index = <UserIndices<T>>::get(&hoster);
-			let mut hosted_archive : HostedArchive = <HostedMap>::get(hoster_index, dat_id);
+			let mut hosted_archive : HostedArchive<T::BlockNumber> = <HostedMap<T>>::get(hoster_index, dat_id);
 			let encoded = hosted_archive.encoding.remove(index.try_into().unwrap());
 			hosted_archive.encoded.push(encoded);
-			<HostedMap>::insert(hoster_index, dat_id, hosted_archive);
+			<HostedMap<T>>::insert(hoster_index, dat_id, hosted_archive);
 			Self::deposit_event(RawEvent::HostingStarted(hoster_index, dat_id));
 		}
 
@@ -689,14 +693,14 @@ decl_module!{
 		) {
 			let attestor = ensure_signed(origin)?;
 			let attestor_index = <UserIndices<T>>::get(attestor);
-			let mut hosted_archive = <HostedMap>::get(hoster_index, dat_index);
+			let mut hosted_archive = <HostedMap<T>>::get(hoster_index, dat_index);
 			let challenge = hosted_archive.state.get(&chunk_index);
 			match challenge {
 				Some(Challenge::Attesting(ats)) => {
 					let mut attestations = ats.clone();
 					attestations.completed.push((attestor_index, attestation));
 					hosted_archive.state.insert(chunk_index, Challenge::Attesting(attestations));
-					<HostedMap>::insert(hoster_index, dat_index, hosted_archive);
+					<HostedMap<T>>::insert(hoster_index, dat_index, hosted_archive);
 				},
 				_ => fail!(Error::<T>::InvalidChallenge),
 
@@ -705,7 +709,7 @@ decl_module!{
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_challenge(_origin, selected_user: u64, dat_id: u64){
-			let mut hosted_map : HostedArchive = <HostedMap>::get(selected_user, dat_id);
+			let mut hosted_map : HostedArchive<T::BlockNumber> = <HostedMap<T>>::get(selected_user, dat_id);
 			// TODO: verify has encoded and block if encoding is not complete.
 			let nonce = Self::unique_nonce();
 			let new_random = (T::Randomness::random(b"dat_verify_init"), nonce)
@@ -719,11 +723,11 @@ decl_module!{
 				random_leaf = new_random % dat_tree_len;
 			}
 			let selected_user_key = <Users<T>>::get(&selected_user).0;
-			let challenge_length : u64 = T::ChallengeDelay::get().into();
-			let now : u64 = system::Module::<T>::block_number().try_into().ok().unwrap().try_into().unwrap();
+			let challenge_length = T::ChallengeDelay::get();
+			let now = system::Module::<T>::block_number();
 			if hosted_map.is_encoded(random_leaf){
-				hosted_map.state.insert(random_leaf, Challenge::Active(now+challenge_length));
-				<HostedMap>::insert(selected_user, dat_id, hosted_map);
+				hosted_map.state.insert(random_leaf, Challenge::Active(now+challenge_length.into()));
+				<HostedMap<T>>::insert(selected_user, dat_id, hosted_map);
 				Self::deposit_event(RawEvent::Challenge(selected_user_key, dat_pubkey));
 			} else {
 				fail!(Error::<T>::IncompleteEncoding);
@@ -757,22 +761,22 @@ decl_module!{
 			}
 		}
 
-/*
-		fn on_initialize(n: T::BlockNumber) => Weight {
-			MINIMUM_WEIGHT
+		/* this somehow breaks everything
+		fn on_initialize() => Weight {
+			0
 		}
-*/ //some bug here, on_initialize breaks
-// consider turning this into a schedulable
-// "anyone calls" function (verify_challenges),
-// like submit_scheduled_challenge
+		*/
+
 		fn on_finalize(n: T::BlockNumber) {
-			for (user_index, dat_index, hosted_archive) in <HostedMap>::iter() {
+			native::info!("on_finalize begun");
+			for (user_index, dat_index, hosted_archive) in <HostedMap<T>>::iter() {
 				for &chunk_index in hosted_archive.state.keys(){
 					let deadline_option = hosted_archive.state.get(&chunk_index);
 					let attesting = Self::get_attestation_status(user_index, dat_index, chunk_index);
+					native::info!("attesting check end");
 					match deadline_option {
 						Some(Challenge::Active(deadline)) => {
-							if deadline < &n.try_into().unwrap_or(usize::MAX).try_into().unwrap_or(u64::MAX) {
+							if deadline < &n {
 								Self::clear_challenge(user_index, dat_index, chunk_index);
 								Self::punish_seeder(user_index);
 								Self::deposit_event(RawEvent::ChallengeFailed(user_index, dat_index));
@@ -792,6 +796,7 @@ decl_module!{
 					}
 				}
 			}
+			native::info!("on_finalize ended");
 		}
 	}
 }
@@ -831,12 +836,14 @@ impl<T: Trait> Module<T> {
 		hoster_index: u64,
 		dat_index: u64,
 		chunk_index: u64,
+		write: bool,
 		) -> Option<(ChallengeAttestations, Vec<u64>)> {
-		let mut hosted : HostedArchive = <HostedMap>::get(hoster_index, dat_index);
+		let mut hosted : HostedArchive<T::BlockNumber> = <HostedMap<T>>::get(hoster_index, dat_index);
 		let attestations : ChallengeAttestations;
 		let challenge = hosted.state.get(&chunk_index);
-		match challenge {
-			Some(Challenge::Attesting(attestors)) => {
+		native::info!("updating attestors begin, write: {:#?}", write);
+		match (write,challenge) {
+			(writing, Some(Challenge::Attesting(attestors))) => {
 				if attestors.expected_attestors.len() == 0{
 					let mut expected_attestors = 
 						Self::get_random_attestors(hoster_index, dat_index);
@@ -848,7 +855,7 @@ impl<T: Trait> Module<T> {
 						completed: attestors.completed.clone(),
 					};
 					hosted.state.insert(chunk_index, Challenge::Attesting(attestations.clone()));
-					<HostedMap>::insert(hoster_index, dat_index, hosted);
+					if writing{<HostedMap<T>>::insert(hoster_index, dat_index, hosted)};
 				} else {
 					attestations = ChallengeAttestations {
 						expected_attestors: attestors.expected_attestors.clone(),
@@ -860,7 +867,7 @@ impl<T: Trait> Module<T> {
 				all_attestors.append(&mut attestations.expected_friends.clone());
 				Some((attestations, all_attestors))
 			},
-			Some(Challenge::Active(_)) => {
+			(true, Some(Challenge::Active(_))) => {
 				let mut expected_attestors = 
 					Self::get_random_attestors(hoster_index, dat_index);
 				expected_attestors.sort_unstable();
@@ -871,7 +878,7 @@ impl<T: Trait> Module<T> {
 					completed: Vec::new(),
 				};
 				hosted.state.insert(chunk_index, Challenge::Attesting(attestations.clone()));
-				<HostedMap>::insert(hoster_index, dat_index, hosted);
+				<HostedMap<T>>::insert(hoster_index, dat_index, hosted);
 				let mut all_attestors: Vec<u64> = attestations.expected_attestors.clone();
 				all_attestors.append(&mut attestations.expected_friends.clone());
 				Some((attestations, all_attestors))
@@ -881,14 +888,17 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn get_attestation_status(hoster_index: u64, dat_index: u64, chunk_index: u64) -> Option<bool> {
+		native::info!("attesting check begin");
 		if let Some((state, _)) = Self::update_attestors_for( 
 			hoster_index,
 			dat_index,
-			chunk_index
+			chunk_index,
+			false
 		){
 			let mut fail_count = 0;
 			for expected in state.clone().expected_attestors {
 				// If any of the expected attestors haven't returned, return None.
+				native::info!("checking expected attestor: {:#?}", expected);
 				if state.completed
 					.iter()
 					.map(|x|x.0)
@@ -904,8 +914,9 @@ impl<T: Trait> Module<T> {
 					}
 				))
 				.is_none(){
+					native::info!("expected attestor: {:#?} has not responded", expected);
 					return None;
-				} 
+				}
 		}
 		// else return Some(success status)
 			Some(fail_count<=(T::AttestorsPerChallenge::get()/2))
@@ -915,35 +926,33 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn clear_challenge(user_index: u64, dat_index: u64, chunk_index: u64){
-		let mut hoster : HostedArchive = <HostedMap>::get(user_index, dat_index);
+		let mut hoster : HostedArchive<T::BlockNumber> = <HostedMap<T>>::get(user_index, dat_index);
 		hoster.state.remove(&chunk_index);
-		<HostedMap>::insert(user_index, dat_index, hoster);
+		<HostedMap<T>>::insert(user_index, dat_index, hoster);
 	}
 
 	fn punish_seeder(punished: u64) {
-		for x in <HostedMap>::iter_prefix_values(punished).enumerate(){
-			let (index, archive): (usize, HostedArchive) = x;
+		for x in <HostedMap<T>>::iter_prefix_values(punished).enumerate(){
+			let (index, archive): (usize, HostedArchive<T::BlockNumber>) = x;
 			let index_small : u64 = index.try_into().unwrap();
-			let new_archive = HostedArchive {
+			let new_archive = HostedArchive::<T::BlockNumber> {
 				encoded: archive.encoded,
 				encoding: archive.encoding,
 				state: BTreeMap::new()
 			};
-			<HostedMap>::insert(punished, index_small, new_archive);
+			<HostedMap<T>>::insert(punished, index_small, new_archive);
 		}
 	}
 
 
 	fn reward_seeder(_rewarded: u64) {
-		//todo
-		unimplemented!();
+		
 	}
 
 	fn forced_register_data(
 		account: T::AccountId,
 		merkle_root: (Public, TreeHashPayload, H512)
-	)
-	{
+	) -> Result<(),()> {
 		let pubkey = merkle_root.0;
 		let sig = Signature::from_h512(merkle_root.2);
 		let mut lowest_free_index : DatIdIndex = 0;
@@ -952,12 +961,12 @@ impl<T: Trait> Module<T> {
 		for child in merkle_root.1.children {
 			tree_size += child.total_length;
 		}
-		native::info!("{:#?}", tree_size);
 		let mut dat_vec : Vec<DatIdIndex> = <DatId>::get();
-		let existed =
-			<DatIndex>::try_mutate_exists(&pubkey, |index_opt| match index_opt.take() {
-			Some(_) => {
-				Err(())
+		let result = <DatIndex>::try_mutate_exists(&pubkey, |index_opt| match index_opt.take() {
+			Some(index) => {
+				// already existed, do not mutate state.
+				native::info!("archive: {:#?} already exists at index: {:#?}", pubkey, index);
+				Err(<Dat>::insert(index, (pubkey, tree_size, root_hash, sig)))
 			},
 			None => {
 				native::info!("Dat Keys Vec: {:#?}", dat_vec);
@@ -980,13 +989,16 @@ impl<T: Trait> Module<T> {
 				}
 				//register new unknown dats
 				*index_opt = Some(lowest_free_index);
+				native::info!("archive: {:#?} newly exists at index: {:#?}", pubkey, &lowest_free_index);
 				Ok(<Dat>::insert(&lowest_free_index, (pubkey, tree_size, root_hash, sig)))
 			},
 		});
 		<DatId>::put(dat_vec);
 		<UserRequestsMap<T>>::insert(&pubkey, &account);
 		Self::deposit_event(RawEvent::SomethingStored(lowest_free_index, pubkey));
-		Self::begin_hosting_if_balanced(None, Some(lowest_free_index))
+		Self::begin_hosting_if_balanced(None, Some(lowest_free_index));
+		native::info!("archive registered successfully: {:#?}", lowest_free_index);
+		result
 	}
 
 	//borrowing from society pallet ---
@@ -1099,6 +1111,7 @@ impl<T: Trait> Module<T> {
 				break;
 			}
 		}
+		native::info!("Attempting begin_hosting");
 		Self::begin_hosting(preferred_host, preferred_archive);
 	}
 
@@ -1106,17 +1119,18 @@ impl<T: Trait> Module<T> {
 	// perhaps consider capping/rebalancing etc.
 	fn begin_hosting(preferred_host: Option<u64>, preferred_archive: Option<u64>){
 		//(encoderID, hosterID, datID)
-		let mut pins: Vec<(u64, u64, u64)> = Vec::new();
 		Self::unique_nonce().using_encoded(|x|{
 		let random_encoders = Self::get_random_of_role(
 			x, 
 			&Role::Encoder, 
 			T::MinEncodersPerHoster::get()
-		); 
+		);
 		match (preferred_host,preferred_archive) {
 			(Some(host),Some(archive)) => {
 				for encoder in random_encoders {
-					pins.push((encoder, host, archive));
+					let pin = (encoder, host, archive);
+					Self::deposit_event(RawEvent::NewPin(encoder, host, archive));
+					native::info!("Pin: {:#?}", pin);
 				}
 			},
 			(Some(host), None) => {
@@ -1124,7 +1138,9 @@ impl<T: Trait> Module<T> {
 					let archives =  Self::get_random_archive(influence, 1);
 					for encoder in random_encoders {
 						for &archive in &archives {
-							pins.push((encoder, host, archive));
+							let pin = (encoder, host, archive);
+							Self::deposit_event(RawEvent::NewPin(encoder, host, archive));
+							native::info!("Pin: {:#?}", pin);
 						}
 					}
 				});
@@ -1138,7 +1154,9 @@ impl<T: Trait> Module<T> {
 					);
 					for encoder in random_encoders {
 						for &host in &hosts {
-							pins.push((encoder, host, archive));
+							let pin = (encoder, host, archive);
+							Self::deposit_event(RawEvent::NewPin(encoder, host, archive));
+							native::info!("Pin: {:#?}", pin);
 						}
 					}
 				});
@@ -1156,15 +1174,14 @@ impl<T: Trait> Module<T> {
 				for &host in &hosts {
 					for &archive in &archives {
 						for &encoder in &random_encoders {
-							pins.push((encoder, host, archive));
+							let pin = (encoder, host, archive);
+							Self::deposit_event(RawEvent::NewPin(encoder, host, archive));
+							native::info!("Pin: {:#?}", pin);
 						}
 					}
 				}
 			}
 		}});
-		for pin in pins {
-			Self::deposit_event(RawEvent::NewPin(pin.0, pin.1, pin.2));
-		}
 	}
 
 	fn modify_role(account: T::AccountId, role: Role, value: bool) -> Result<UserIdIndex, ()> {
