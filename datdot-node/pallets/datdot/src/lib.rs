@@ -1,19 +1,15 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-/// A runtime module template with necessary imports
 
-/// Feel free to remove or edit this file as needed.
-/// If you change the name of this file, make sure to update its references in runtime/src/lib.rs
-/// If you remove this file, you can remove those references
+/******************************************************************************
+  A runtime module template with necessary imports
+******************************************************************************/
 
-
-/// For more guidance on Substrate modules, see the example module
-/// https://github.com/paritytech/substrate/blob/master/srml/example/src/lib.rs
 use sp_std::prelude::*;
 use sp_std::fmt::Debug;
 use sp_std::collections::btree_map::BTreeMap;
 use frame_support::{
 	decl_module,
-	decl_storage, 
+	decl_storage,
 	decl_event,
 	decl_error,
 	debug::native,
@@ -72,10 +68,12 @@ use sp_io::hashing::blake2_256;
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
 
-/// The module's configuration trait.
+/******************************************************************************
+  The module's configuration trait
+******************************************************************************/
 pub trait Trait: system::Trait{
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
-	type Hash: 
+	type Hash:
 	Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + SimpleBitOps
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
@@ -104,37 +102,37 @@ pub trait Trait: system::Trait{
 }
 
 
-
-// Events in order of expected incidence
+/******************************************************************************
+  Events
+******************************************************************************/
 decl_event!(
 	pub enum Event<T>{
-		/// New feed registered
+		/// New data feed registered
 		NewFeed(T::FeedId),
-		/// New hosting plan
+		/// New hosting plan by publisher for selected feed (many possible plans per feed)
 		NewPlan(T::PlanId),
-		//const data = [encoderID, hosterID, selectedPlan.feed, contractID, contract.ranges]
-		/// A new contract is created between publisher, encoder, and hoster
+		/// A new contract between publisher, encoder, and hoster (many contracts per plan)
 		NewContract(T::EncoderId, T::HosterId, T::FeedId, T::ContractId, ContractRanges),
-		/// Hosting (contract) started
+		/// Hosting contract started
 		HostingStarted(T::ContractId),
 		/// New proof-of-storage challenge
-		ProofOfStorageChallenge(T::ChallengeId),
-		/// Proof of storage confirmed
+		NewProofOfStorageChallenge(T::ChallengeId),
+		/// Proof-of-storage confirmed
 		ProofOfStorageConfirmed(T::AttestorId, T::ChallengeId),
-		/// Proof of storage not confirmed
+		/// Proof-of-storage not confirmed
 		ProofOfStorageFailed(T::ChallengeId),
 		/// Attestation of retrievability requested
-		ProofOfRetrievabilityAttestation(T::ChallengeId),
+		newAttestation(T::ChallengeId),
 		/// Proof of retrievability confirmed
-		ProofOfRetrievabilityConfirmed(T::ChallengeId),
+		AttestationReportConfirmed(T::ChallengeId),
 		/// Data serving not verified
-		ProofOfRetrievabilityFailed(T::ChallengeId),
+		AttestationReportFailed(T::ChallengeId),
 	}
 );
 
 decl_error! {
     pub enum Error for Module<T: Trait> {
-		
+
     }
 }
 
@@ -153,7 +151,18 @@ struct User<T: Trait> {
 	address: T::AccountId
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, Copy, RuntimeDebug)]
+type FeedKey = Public;
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+struct Feed<T: Trait> {
+	id: T::FeedId,
+	publickey: FeedKey,
+	meta: TreeRoot
+}
+
+type Ranges<T: Trait> = Vec<(T::ChunkIndex, T::ChunkIndex)>;
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct ParentHashInRoot {
 	hash: H256,
 	hash_number: u64,
@@ -172,17 +181,6 @@ pub struct TreeHashPayload {
 	hash_type: u8, //2
 	children: Vec<ParentHashInRoot>
 }
-
-type FeedKey = Public;
-
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-struct Feed<T: Trait> {
-	id: T::FeedId,
-	publickey: FeedKey,
-	meta: TreeRoot
-}
-
-type Ranges<T: Trait> = Vec<(T::ChunkIndex, T::ChunkIndex)>;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 struct Plan<T: Trait> {
@@ -209,6 +207,13 @@ struct Challenge<T: Trait> {
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Proof {
+	index: u64,
+	nodes: Vec<Node>,
+	signature: Option<Signature>
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 struct Attestation<T: Trait> {
 	id: T::AttestationId,
 	attestor: T::AttestorId,
@@ -216,17 +221,25 @@ struct Attestation<T: Trait> {
 	chunks: Vec<T::ChunkIndex>
 }
 
-// storage items/db
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Report {
+	location: u8,
+	latency: Option<u8>
+}
+
+/******************************************************************************
+  Storage items/db
+******************************************************************************/
 decl_storage! {
 	trait Store for Module<T: Trait> as DatVerify {
-		// public/api
+	// PUBLIC/API
 		pub GetFeedByID: map hasher(twox_64_concat) T::FeedId => Feed<T>;
         pub GetUserByID: map hasher(twox_64_concat) T::UserId => User<T>;
         pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Contract<T>;
         pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Challenge<T>;
 		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Plan<T>;
 		pub GetAttestationByID: map hasher(twox_64_concat) T::AttestationId => Attestation<T>;
-		// internally required storage
+	// INETRNALLY REQUIRED STORAGE
 		pub GetNextFeedID: T::FeedId;
 		pub GetNextUserID: T::UserId;
 		pub GetNextContractID: T::ContractId;
@@ -234,19 +247,20 @@ decl_storage! {
 		pub GetNextPlanID: T::PlanId;
 		pub GetNextAttestationID: T::AttestationId;
 		pub Nonce: u64;
-		// lookups (created as neccesary)
+	// LOOKUPS (created as neccesary)
 		pub GetIDByUser: map hasher(twox_64_concat) User<T> => T::UserId;
-		// role array
+	// ROLES ARRAY
 		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => RoleValue;
 	}
 }
 
-//externally dispatchable functions/calls
-//(including on_finalize, on_initialize)
+/******************************************************************************
+  External functions (including on_finalize, on_initialize)
+******************************************************************************/
 decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		type Error = Error<T>;
-		
+
 		fn deposit_event() = default;
 
 		fn new_user(origin){
@@ -328,19 +342,86 @@ decl_module!{
 				plan_id = x;
 				x = x+1;
 			});
-			Self::try_new_contract(None, None, Some(plan_id));
+			Self::make_new_contract(None, None, Some(plan_id));
 			Self::deposit_event(RawEvent::NewFeed(feed_id));
 			Self::deposit_event(RawEvent::NewPlan(plan_id));
 		}
 
-		fn 
+		fn encoding_done(origin, T::ContractId ){
+			let user_address = ensure_signed(origin)?;
+			// DB.contractsEncoded.push(contractID)
+		}
+
+		fn hosting_starts(origin, T::ContractId ){
+			let user_address = ensure_signed(origin)?;
+			// DB.contractsHosted.push(contractID)
+			// const HostingStarted = { event: { data: [contractID], method: 'HostingStarted' } }
+			// handlers.forEach(handler => handler([HostingStarted]))
+		}
+
+		fn request_proof_of_storage_challenge(origin, T::ContractId ){
+			let user_address = ensure_signed(origin)?;
+			let contract = <GetContractByID>::Get(&ContractId);
+			let ranges = contract.ranges;
+			/*
+			const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
+			const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
+			const challenge = { contract: contractID, chunks }
+			const challengeID = DB.challenges.push(challenge)
+			challenge.id = challengeID
+			// emit events
+			const newChallenge = { event: { data: [challengeID], method: 'NewProofOfStorageChallenge' } }
+			handlers.forEach(handler => handler([newChallenge]))
+			*/
+		}
+
+		fn submit_proof_of_storage(origin, T::ChallengeId, proof: Proof ){
+			let user_address = ensure_signed(origin)?;
+			let challenge = <GetChallengeByID>::Get(&ChallengeId);
+			/*
+			const challenge = DB.challenges[challengeID - 1]
+		    const isValid = validateProof(proof, challenge)
+		    let proofValidation
+		    const data = [challengeID]
+		    console.log('Submitting Proof Of Storage Challenge with ID:', challengeID)
+		    if (isValid) proofValidation = { event: { data, method: 'ProofOfStorageConfirmed' } }
+		    else proofValidation = { event: { data: [challengeID], method: 'ProofOfStorageFailed' } }
+		    // emit events
+		    handlers.forEach(handler => handler([proofValidation]))
+			*/
+		}
+
+		fn request_attestation(origin, T::ContractId ){
+			let user_address = ensure_signed(origin)?;
+			/*
+			const [ attestorID ] = getRandom(DB.attestors)
+		    const attestation = { contract: contractID , attestor: attestorID }
+		    const attestationID = DB.attestations.push(attestation)
+		    attestation.id = attestationID
+		    const PoRChallenge = { event: { data: [attestationID], method: 'newAttestation' } }
+		    handlers.forEach(handler => handler([PoRChallenge]))
+			*/
+		}
+
+		fn submit_attestation_report(origin, T::AttestationId, report: Report ){
+			let user_address = ensure_signed(origin)?;
+			/*
+			console.log('Submitting Proof Of Retrievability Attestation with ID:', attestationID)
+			// emit events
+			if (report) PoR = { event: { data: [attestationID], method: 'AttestationReportConfirmed' } }
+			else PoR = { event: { data: [attestationID], method: 'AttestationReportFailed' } }
+			handlers.forEach(handler => handler([PoR]))
+			*/
+		}
 	}
 }
 
-//pallet internal functions
+/******************************************************************************
+  Internal functions
+******************************************************************************/
 impl<T: Trait> Module<T> {
 
-	fn try_new_contract(
+	fn make_new_contract(
 		encoder_option: Option<T::EncoderId>,
 		hoster_option: Option<T::HosterId>,
 		plan_option: Option<T::PlanId>
@@ -352,7 +433,7 @@ impl<T: Trait> Module<T> {
 			(Some(encoder_id), Some(hoster_id), Some(plan_id)) => {
 				<GetNextContractID<T>>::mutate(|x|{
 					let plan = <GetPlanByID<T>>::get(plan_id);
-					let new_contract = Contract<T> {
+					let new_contract = Contract {
 						id: x,
 						plan: plan_id,
 						ranges: plan.ranges,
@@ -363,17 +444,17 @@ impl<T: Trait> Module<T> {
 					x = x+1;
 				});
 			},
-			(None, None, Some(plan_id)) => {
+			(None, None, Some(plan_id)) => {  // Condition: if planID && encoders available & hosters available
 				// todo get random
-				Self::try_new_contract(random_encoder_option, random_hoster_option, plan_option);
+				Self::make_new_contract(random_encoder_option, random_hoster_option, plan_option);
 			},
-			(None, Some(hoster_id), None) => {
+			(None, Some(hoster_id), None) => { //Condition: if hosterID && encoders available & plans available
 				// todo get random
-				Self::try_new_contract(random_encoder_option, hoster_option, random_plan_option);
+				Self::make_new_contract(random_encoder_option, hoster_option, random_plan_option);
 			},
-			(Some(encoder_id), None, None) => {
+			(Some(encoder_id), None, None) => { //Condition: if encoderID && hosters available & plans available
 				// todo get random
-				Self::try_new_contract(encoder_option, random_hoster_option, random_plan_option);
+				Self::make_new_contract(encoder_option, random_hoster_option, random_plan_option);
 			},
 			(_, _, _) => ()
 		}
@@ -384,7 +465,7 @@ impl<T: Trait> Module<T> {
 		(rng.next_u32() % (max as u32 + 1)) as usize
 	}
 
-	
+
 	/// Pick an item at pseudo-random from the slice, given the `rng`. `None` iff the slice is empty.
 	fn pick_item<'a, R: RngCore, E>(rng: &mut R, items: &'a [E]) -> Option<&'a E> {
 		if items.is_empty() {
@@ -403,7 +484,7 @@ impl<T: Trait> Module<T> {
 
 	fn Get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<u64> {
 		let members : Vec<u64> = <roles<T>>::iter_prefix(role).filter_map(|x|{
-			
+
 		}).collect();
 		match members.len() {
 			0 => members,
