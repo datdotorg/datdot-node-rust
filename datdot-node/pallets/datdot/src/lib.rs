@@ -64,6 +64,7 @@ use sp_runtime::{
 		Member
 	},
 };
+use sp_arithmetic::traits::{BaseArithmetic, One};
 use sp_io::hashing::blake2_256;
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
@@ -78,25 +79,25 @@ pub trait Trait: system::Trait{
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
 	//ID TYPES---
-	type FeedId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type FeedId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type UserId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type UserId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type ContractId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type ContractId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type ChallengeId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type ChallengeId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type PlanId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type PlanId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type AttestorId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type AttestorId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type AttestationId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type AttestationId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type HosterId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type HosterId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type EncoderId: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type EncoderId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type ChunkIndex: Parameter + Member + AtLeast32Bit + Codec + Default + Copy +
+	type ChunkIndex: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
 	// ---
 }
@@ -107,41 +108,37 @@ pub trait Trait: system::Trait{
 ******************************************************************************/
 decl_event!(
 	pub enum Event<T> where
+	<T as Trait>::AttestorId,
 	<T as Trait>::EncoderId, 
 	<T as Trait>::HosterId, 
 	<T as Trait>::FeedId, 
 	<T as Trait>::ContractId,
 	<T as Trait>::PlanId,
-	<T as Trait>::ChallengeId
+	<T as Trait>::ChallengeId,
+	<T as Trait>::ChunkIndex
 	{
 		/// New data feed registered
-		NewFeed(T::FeedId),
+		NewFeed(FeedId),
 		/// New hosting plan by publisher for selected feed (many possible plans per feed)
-		NewPlan(T::PlanId),
+		NewPlan(PlanId),
 		/// A new contract between publisher, encoder, and hoster (many contracts per plan)
-		NewContract(T::EncoderId, T::HosterId, T::FeedId, T::ContractId, ContractRanges),
+		NewContract(EncoderId, HosterId, FeedId, ContractId, Ranges<ChunkIndex>),
 		/// Hosting contract started
-		HostingStarted(T::ContractId),
+		HostingStarted(ContractId),
 		/// New proof-of-storage challenge
-		NewProofOfStorageChallenge(T::ChallengeId),
+		NewProofOfStorageChallenge(ChallengeId),
 		/// Proof-of-storage confirmed
-		ProofOfStorageConfirmed(T::AttestorId, T::ChallengeId),
+		ProofOfStorageConfirmed(AttestorId, ChallengeId),
 		/// Proof-of-storage not confirmed
-		ProofOfStorageFailed(T::ChallengeId),
+		ProofOfStorageFailed(ChallengeId),
 		/// Attestation of retrievability requested
-		newAttestation(T::ChallengeId),
+		NewAttestation(ChallengeId),
 		/// Proof of retrievability confirmed
-		AttestationReportConfirmed(T::ChallengeId),
+		AttestationReportConfirmed(ChallengeId),
 		/// Data serving not verified
-		AttestationReportFailed(T::ChallengeId),
+		AttestationReportFailed(ChallengeId),
 	}
 );
-
-decl_error! {
-    pub enum Error for Module<T: Trait> {
-
-    }
-}
 
 type RoleValue = Option<u32>;
 
@@ -152,7 +149,7 @@ enum Role {
 	Attestor
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct User<T: Trait> {
 	id: T::UserId,
 	address: T::AccountId
@@ -160,14 +157,14 @@ struct User<T: Trait> {
 
 type FeedKey = Public;
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Feed<T: Trait> {
 	id: T::FeedId,
 	publickey: FeedKey,
 	meta: TreeRoot
 }
 
-type Ranges<T: Trait> = Vec<(T::ChunkIndex, T::ChunkIndex)>;
+type Ranges<C> = Vec<(C, C)>;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct ParentHashInRoot {
@@ -176,7 +173,7 @@ pub struct ParentHashInRoot {
 	total_length: u64
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 pub struct TreeRoot {
 	signature: H512,
 	hash_type: u8, //2
@@ -189,28 +186,135 @@ pub struct TreeHashPayload {
 	children: Vec<ParentHashInRoot>
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Plan<T: Trait> {
 	id: T::PlanId,
 	feed: T::FeedId,
 	publisher: T::UserId,
-	ranges: Ranges<T>
+	ranges: Ranges<T::ChunkIndex>
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Contract<T: Trait> {
 	id: T::ContractId,
 	plan: T::PlanId,
-	ranges: Ranges<T>,
+	ranges: Ranges<T::ChunkIndex>,
 	encoder: T::EncoderId,
 	hoster: T::HosterId
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Challenge<T: Trait> {
 	id: T::ChallengeId,
 	contract: T::ContractId,
 	chunks: Vec<T::ChunkIndex>
+}
+
+
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Node {
+	index: u64,
+	hash: H256,
+	size: u64
+}
+
+impl Node {
+	fn height(&self) -> u64 {
+		Self::get_height(self.index)
+	}
+
+	fn get_height(index : u64) -> u64 {
+		let mut bit_pointer : u64 = 1;
+		let mut cur_height : u64 = 0;
+		while (index | bit_pointer) == index {
+			cur_height += 1;
+			bit_pointer *= 2;
+		}
+		cur_height
+	}
+
+	//get the index as if it were a leaf
+	fn relative_index(&self) -> u64 {
+		Self::index_at_height(self.index, self.height())
+	}
+
+	fn index_at_height(index : u64, height : u64) -> u64 {
+		index / 2u64.pow(height.try_into().unwrap())
+	}
+
+	//get the last index at a given height, given a max leaf index
+	fn top_index_at_height(height : u64, max_index : u64) -> Option<u64> {
+		let offset = 2u64.pow(height.try_into().unwrap())-1;
+		let interval = 2u64.pow((height+1).try_into().unwrap());
+		let mut furthest_leaf = 0;
+		let mut result = None;
+		if height == 0 {
+			result = Some(max_index);
+		} else {
+			for i in 0..height { //not inclusive of height intended
+				furthest_leaf += 2u64.pow(i.try_into().unwrap());
+			}
+		}
+		if max_index > offset {
+			let mut next_result = true;
+			while next_result {	
+				match result {
+					Some(index) => {
+						if index + interval + furthest_leaf > max_index {
+							next_result = false;
+						} else {
+							result = Some(index+interval);
+						}
+					},
+					None => {
+						result = Some(offset); 
+					},
+				}
+			}
+		}
+		result
+	}
+
+	//get the highest height, given a max leaf index
+	fn highest_at_index(max_index : u64) -> u64 {
+		//max_index == 2^n - 2
+		//return n
+		//TODO: needs tests/audit, this was written using trail and error.
+		let mut current_index = Some(max_index);
+		let mut current_height : u64 = 0;
+		while current_index.unwrap_or(0) > 2u64.pow(current_height.try_into().unwrap()) {
+			current_index = current_index
+				.unwrap_or(0)
+				.checked_sub(2u64.pow((current_height+1).try_into().unwrap()));
+			match current_index {
+				Some(_) => current_height += 1,
+				None => (),
+			}
+		}
+		current_height
+	}
+
+
+	//get indexes of nodes in a merkle tree that are used to
+	//calculate the root hash
+	fn get_orphan_indeces(highest_index : u64) -> Vec<u64> {
+		let mut indeces : Vec<u64> = Vec::new();
+		for i in 0..Self::highest_at_index(highest_index)+1 {
+			match Self::top_index_at_height(i, highest_index) {
+				Some(expr) => if expr % 2 == 0 {
+					indeces.push(expr);
+				},
+				None => (),
+			}
+		}
+		indeces
+	}
+
+	fn is_orphan(&self, highest_index : u64) -> bool {
+		Self::get_orphan_indeces(highest_index)
+			.contains(&self.index)
+	}
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -220,7 +324,7 @@ pub struct Proof {
 	signature: Option<Signature>
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Attestation<T: Trait> {
 	id: T::AttestationId,
 	attestor: T::AttestorId,
@@ -254,9 +358,9 @@ decl_storage! {
 		pub GetNextPlanID: T::PlanId;
 		pub GetNextAttestationID: T::AttestationId;
 		pub Nonce: u64;
-	// LOOKUPS (created as neccesary)
+		// LOOKUPS (created as neccesary)
 		pub GetIDByUser: map hasher(twox_64_concat) User<T> => T::UserId;
-	// ROLES ARRAY
+		// ROLES ARRAY
 		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => RoleValue;
 	}
 }
@@ -266,10 +370,11 @@ decl_storage! {
 ******************************************************************************/
 decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		type Error = Error<T>;
 
 		fn deposit_event() = default;
 
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn new_user(origin){
 			let user_address = ensure_signed(origin)?;
 			<GetIDByUser>::exists(&user_address);
@@ -283,42 +388,50 @@ decl_module!{
 			});
 		}
 
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_encoder(origin){
 			let user_address = ensure_signed(origin)?;
 			let user_id = <GetUserByID>::Get(&user_address);
-			<roles>::insert(Role::Encoder, user_id, Some(0));
+			<Roles>::insert(Role::Encoder, user_id, Some(0));
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_hoster(origin){
 			let user_address = ensure_signed(origin)?;
 			let user_id = <GetUserByID>::Get(&user_address);
-			<roles>::insert(Role::Hoster, user_id, Some(0));
+			<Roles>::insert(Role::Hoster, user_id, Some(0));
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_attestor(origin){
 			let user_address = ensure_signed(origin)?;
 			let user_id = <GetUserByID>::Get(&user_address);
-			<roles>::insert(Role::Attestor, user_id, Some(0));
+			<Roles>::insert(Role::Attestor, user_id, Some(0));
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_encoder(origin){
 			let user_address = ensure_signed(origin)?;
 			let user_id = <GetUserByID>::Get(&user_address);
-			<roles>::insert(Role::Encoder, user_id, None);
+			<Roles>::insert(Role::Encoder, user_id, None);
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_hoster(origin){
 			let user_address = ensure_signed(origin)?;
 			let user_id = <GetUserByID>::Get(&user_address);
-			<roles>::insert(Role::Hoster, user_id, None);
+			<Roles>::insert(Role::Hoster, user_id, None);
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_attestor(origin){
 			let user_address = ensure_signed(origin)?;
 			let user_id = <GetUserByID>::Get(&user_address);
-			<roles>::insert(Role::Attestor, user_id, None);
+			<Roles>::insert(Role::Attestor, user_id, None);
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn publish_feed_and_plan(origin, merkle_root: (Public, TreeHashPayload, H512), plan: Plan){
 			let user_address = ensure_signed(origin)?;
 			let user_id = <GetUserByID>::Get(&user_address);
@@ -354,11 +467,13 @@ decl_module!{
 			Self::deposit_event(RawEvent::NewPlan(plan_id));
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn encoding_done(origin, T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			// DB.contractsEncoded.push(contractID)
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn hosting_starts(origin, T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			// DB.contractsHosted.push(contractID)
@@ -366,6 +481,7 @@ decl_module!{
 			// handlers.forEach(handler => handler([HostingStarted]))
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn request_proof_of_storage_challenge(origin, T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			let contract = <GetContractByID>::Get(&ContractId);
@@ -382,6 +498,7 @@ decl_module!{
 			*/
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_proof_of_storage(origin, T::ChallengeId, proof: Proof ){
 			let user_address = ensure_signed(origin)?;
 			let challenge = <GetChallengeByID>::Get(&ChallengeId);
@@ -398,6 +515,7 @@ decl_module!{
 			*/
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn request_attestation(origin, T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			/*
@@ -410,6 +528,7 @@ decl_module!{
 			*/
 		}
 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_attestation_report(origin, T::AttestationId, report: Report ){
 			let user_address = ensure_signed(origin)?;
 			/*
@@ -433,35 +552,42 @@ impl<T: Trait> Module<T> {
 		hoster_option: Option<T::HosterId>,
 		plan_option: Option<T::PlanId>
 	){
-		let mut random_hoster_option;
-		let mut random_encoder_option;
-		let mut random_plan_option;
+		let mut random_hoster_option = None;
+		let mut random_encoder_option = None;
+		let mut random_plan_option = None;
 		match (encoder_option, hoster_option, plan_option) {
 			(Some(encoder_id), Some(hoster_id), Some(plan_id)) => {
 				<GetNextContractID<T>>::mutate(|x|{
-					let plan = <GetPlanByID<T>>::get(plan_id);
-					let new_contract = Contract {
-						id: x,
-						plan: plan_id,
-						ranges: plan.ranges,
-						encoder: encoder_id,
-						hoster: hoster_id
+					if let Some(plan) = <GetPlanByID<T>>::get(plan_id){
+						let new_contract = Contract {
+							id: x.clone(),
+							plan: plan_id,
+							ranges: plan.ranges,
+							encoder: encoder_id,
+							hoster: hoster_id
+						};
+						<GetContractByID<T>>::insert(x.into(), new_contract);
+						*x = *x+One::one();
 					};
-					<GetContractByID<T>>::insert(x, new_contract);
-					x = x+1;
 				});
 			},
 			(None, None, Some(plan_id)) => {  // Condition: if planID && encoders available & hosters available
 				// todo get random
-				Self::make_new_contract(random_encoder_option, random_hoster_option, plan_option);
+				if random_encoder_option.is_some() && random_hoster_option.is_some(){
+					Self::make_new_contract(random_encoder_option, random_hoster_option, plan_option);
+				}
 			},
 			(None, Some(hoster_id), None) => { //Condition: if hosterID && encoders available & plans available
 				// todo get random
-				Self::make_new_contract(random_encoder_option, hoster_option, random_plan_option);
+				if random_encoder_option.is_some() && random_plan_option.is_some(){
+					Self::make_new_contract(random_encoder_option, hoster_option, random_plan_option);
+				}
 			},
 			(Some(encoder_id), None, None) => { //Condition: if encoderID && hosters available & plans available
 				// todo get random
-				Self::make_new_contract(encoder_option, random_hoster_option, random_plan_option);
+				if random_hoster_option.is_some() && random_plan_option.is_some(){
+					Self::make_new_contract(encoder_option, random_hoster_option, random_plan_option);
+				}
 			},
 			(_, _, _) => ()
 		}
@@ -484,13 +610,14 @@ impl<T: Trait> Module<T> {
 	// ---
 
 	fn unique_nonce() -> u64 {
-		let nonce = <Nonce>::Get();
+		let nonce = <Nonce>::get();
 		<Nonce>::put(nonce+1);
 		nonce
 	}
 
+	/*
 	fn Get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<u64> {
-		let members : Vec<u64> = <roles<T>>::iter_prefix(role).filter_map(|x|{
+		let members : Vec<u64> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
 
 		}).collect();
 		match members.len() {
@@ -511,5 +638,6 @@ impl<T: Trait> Module<T> {
 			},
 		}
 	}
+	*/
 
 }
