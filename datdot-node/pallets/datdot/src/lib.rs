@@ -107,28 +107,35 @@ pub trait Trait: system::Trait{
 
 // Events in order of expected incidence
 decl_event!(
-	pub enum Event<T>{
+	pub enum Event<T> where
+	<T as Trait>::EncoderId, 
+	<T as Trait>::HosterId, 
+	<T as Trait>::FeedId, 
+	<T as Trait>::ContractId,
+	<T as Trait>::PlanId,
+	<T as Trait>::ChallengeId
+	{
 		/// New feed registered
-		NewFeed(T::FeedId),
+		NewFeed(FeedId),
 		/// New hosting plan
-		NewPlan(T::PlanId),
+		NewPlan(PlanId),
 		//const data = [encoderID, hosterID, selectedPlan.feed, contractID, contract.ranges]
 		/// A new contract is created between publisher, encoder, and hoster
-		NewContract(T::EncoderId, T::HosterId, T::FeedId, T::ContractId, ContractRanges),
+		NewContract(EncoderId, HosterId, FeedId, ContractId, ContractRanges),
 		/// Hosting (contract) started
-		HostingStarted(T::ContractId),
+		HostingStarted(ContractId),
 		/// New proof-of-storage challenge
-		ProofOfStorageChallenge(T::ChallengeId),
+		ProofOfStorageChallenge(ChallengeId),
 		/// Proof of storage confirmed
-		ProofOfStorageConfirmed(T::AttestorId, T::ChallengeId),
+		ProofOfStorageConfirmed(AttestorId, ChallengeId),
 		/// Proof of storage not confirmed
-		ProofOfStorageFailed(T::ChallengeId),
+		ProofOfStorageFailed(ChallengeId),
 		/// Attestation of retrievability requested
-		ProofOfRetrievabilityAttestation(T::ChallengeId),
+		ProofOfRetrievabilityAttestation(ChallengeId),
 		/// Proof of retrievability confirmed
-		ProofOfRetrievabilityConfirmed(T::ChallengeId),
+		ProofOfRetrievabilityConfirmed(ChallengeId),
 		/// Data serving not verified
-		ProofOfRetrievabilityFailed(T::ChallengeId),
+		ProofOfRetrievabilityFailed(ChallengeId),
 	}
 );
 
@@ -220,12 +227,12 @@ struct Attestation<T: Trait> {
 decl_storage! {
 	trait Store for Module<T: Trait> as DatVerify {
 		// public/api
-		pub GetFeedByID: map hasher(twox_64_concat) T::FeedId => Feed<T>;
-        pub GetUserByID: map hasher(twox_64_concat) T::UserId => User<T>;
-        pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Contract<T>;
-        pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Challenge<T>;
-		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Plan<T>;
-		pub GetAttestationByID: map hasher(twox_64_concat) T::AttestationId => Attestation<T>;
+		pub GetFeedByID: map hasher(twox_64_concat) T::FeedId => Option<Feed<T>>;
+        pub GetUserByID: map hasher(twox_64_concat) T::UserId => Option<User<T>>;
+        pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Option<Contract<T>>;
+        pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<Challenge<T>>;
+		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T>>;
+		pub GetAttestationByID: map hasher(twox_64_concat) T::AttestationId => Option<Attestation<T>>;
 		// internally required storage
 		pub GetNextFeedID: T::FeedId;
 		pub GetNextUserID: T::UserId;
