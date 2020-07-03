@@ -44,7 +44,12 @@ use frame_system::{
 	ensure_root,
 	RawOrigin
 };
-use codec::{Encode, Decode, Codec};
+use codec::{
+	Encode,
+	Decode, 
+	Codec, 
+	EncodeLike
+};
 use sp_core::{
 	ed25519,
 	H256,
@@ -79,25 +84,25 @@ pub trait Trait: system::Trait{
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
 	//ID TYPES---
-	type FeedId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type FeedId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type UserId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type UserId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type ContractId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type ContractId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type ChallengeId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type ChallengeId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type PlanId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type PlanId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type AttestorId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type AttestorId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type AttestationId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type AttestationId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type HosterId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type HosterId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type EncoderId: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type EncoderId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type ChunkIndex: Parameter + Member + AtLeast32Bit + BaseArithmetic + Codec + Default + Copy +
+	type ChunkIndex: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
 	// ---
 }
@@ -300,7 +305,7 @@ impl Node {
 	//calculate the root hash
 	fn get_orphan_indeces(highest_index : u64) -> Vec<u64> {
 		let mut indeces : Vec<u64> = Vec::new();
-		for i in 0..Self::highest_at_index(highest_index)+1 {
+		for i in 0..Self::highest_at_index(highest_index)+1{
 			match Self::top_index_at_height(i, highest_index) {
 				Some(expr) => if expr % 2 == 0 {
 					indeces.push(expr);
@@ -359,7 +364,7 @@ decl_storage! {
 		pub GetNextAttestationID: T::AttestationId;
 		pub Nonce: u64;
 		// LOOKUPS (created as neccesary)
-		pub GetIDByUser: map hasher(twox_64_concat) User<T> => T::UserId;
+		pub GetIDByUser: map hasher(twox_64_concat) T::AccountId => Option<T::UserId>;
 		// ROLES ARRAY
 		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => RoleValue;
 	}
@@ -370,138 +375,151 @@ decl_storage! {
 ******************************************************************************/
 decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-
 		fn deposit_event() = default;
-
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn new_user(origin){
 			let user_address = ensure_signed(origin)?;
-			<GetIDByUser>::exists(&user_address);
-			<GetNextUserID>::mutate(|x|{
-				let new_user = User {
-					id: x,
-					address: user_address
-				};
-				<GetUserByID>::insert(x, new_user);
-				x = x+1;
-			});
+			if <GetIDByUser<T>>::contains_key(&user_address){
+				// some err
+			} else {
+				let mut x = <GetNextUserID<T>>::get();
+					let new_user = User {
+						id: x.clone(),
+						address: user_address.clone()
+					};
+					<GetUserByID<T>>::insert(x, new_user);
+					<GetIDByUser<T>>::insert(&user_address, x.clone());
+				<GetNextUserID<T>>::put(x+One::one());
+			}
 		}
 
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_encoder(origin){
 			let user_address = ensure_signed(origin)?;
-			let user_id = <GetUserByID>::Get(&user_address);
-			<Roles>::insert(Role::Encoder, user_id, Some(0));
+			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::Some(0));
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_hoster(origin){
 			let user_address = ensure_signed(origin)?;
-			let user_id = <GetUserByID>::Get(&user_address);
-			<Roles>::insert(Role::Hoster, user_id, Some(0));
+			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::Some(0));
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_attestor(origin){
 			let user_address = ensure_signed(origin)?;
-			let user_id = <GetUserByID>::Get(&user_address);
-			<Roles>::insert(Role::Attestor, user_id, Some(0));
+			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::Some(0));
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_encoder(origin){
 			let user_address = ensure_signed(origin)?;
-			let user_id = <GetUserByID>::Get(&user_address);
-			<Roles>::insert(Role::Encoder, user_id, None);
+			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::None);
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_hoster(origin){
 			let user_address = ensure_signed(origin)?;
-			let user_id = <GetUserByID>::Get(&user_address);
-			<Roles>::insert(Role::Hoster, user_id, None);
+			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::None);
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_attestor(origin){
 			let user_address = ensure_signed(origin)?;
-			let user_id = <GetUserByID>::Get(&user_address);
-			<Roles>::insert(Role::Attestor, user_id, None);
+			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::None);
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn publish_feed_and_plan(origin, merkle_root: (Public, TreeHashPayload, H512), plan: Plan){
+		fn publish_feed_and_plan(origin, merkle_root: (Public, TreeHashPayload, H512), ranges: Ranges<T::ChunkIndex>){
 			let user_address = ensure_signed(origin)?;
-			let user_id = <GetUserByID>::Get(&user_address);
-			let mut feed_id;
-			let mut plan_id;
+			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				let mut feed_id : T::FeedId;
+				let mut plan_id : T::PlanId;
 			//TODO -- currently re-registering existing feeds creates a new FeedID, should lookup first.
-			<GetNextFeedID>::mutate(|x|{
+			let next_feed_id = <GetNextFeedID<T>>::get();
 				let new_feed = Feed {
-					id: x,
+					id: next_feed_id.clone(),
 					publickey: merkle_root.0,
 					meta: TreeRoot {
 						signature: merkle_root.2,
-						...merkle_root.1
+						hash_type: merkle_root.1.hash_type,
+						children: merkle_root.1.children
 					}
 				};
-				<GetFeedByID>::insert(x, new_feed);
-				feed_id = x;
-				x = x+1;
-			});
-			<GetNextPlanID>::mutate(|x|{
-				let new_plan = Plan {
-					id: x,
+				<GetFeedByID<T>>::insert(next_feed_id, new_feed.clone());
+				feed_id = next_feed_id.clone();
+				<GetNextFeedID<T>>::put(next_feed_id+One::one());
+			let next_plan_id = <GetNextPlanID<T>>::get();
+				let new_plan = Plan::<T> {
+					id: next_plan_id.clone(),
 					publisher: user_id,
 					feed: feed_id,
-					ranges: plan.ranges
+					ranges: ranges
 				};
-				<GetPlanByID>::insert(x, new_plan);
-				plan_id = x;
-				x = x+1;
-			});
-			Self::make_new_contract(None, None, Some(plan_id));
+				<GetPlanByID<T>>::insert(next_plan_id, new_plan.clone());
+				plan_id = next_plan_id.clone();
+				<GetNextPlanID<T>>::put(next_plan_id+One::one());
+			Self::make_new_contract(None, None, Some(plan_id.clone()));
 			Self::deposit_event(RawEvent::NewFeed(feed_id));
-			Self::deposit_event(RawEvent::NewPlan(plan_id));
+			Self::deposit_event(RawEvent::NewPlan(plan_id.clone()));
+			} else {
+				//some err
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn encoding_done(origin, T::ContractId ){
+		fn encoding_done(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			// DB.contractsEncoded.push(contractID)
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn hosting_starts(origin, T::ContractId ){
+		fn hosting_starts(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			// DB.contractsHosted.push(contractID)
 			// const HostingStarted = { event: { data: [contractID], method: 'HostingStarted' } }
 			// handlers.forEach(handler => handler([HostingStarted]))
+			Self::deposit_event(RawEvent::HostingStarted(contract_id));
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn request_proof_of_storage_challenge(origin, T::ContractId ){
+		fn request_proof_of_storage_challenge(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
-			let contract = <GetContractByID>::Get(&ContractId);
-			let ranges = contract.ranges;
-			/*
-			const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
-			const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
-			const challenge = { contract: contractID, chunks }
-			const challengeID = DB.challenges.push(challenge)
-			challenge.id = challengeID
-			// emit events
-			const newChallenge = { event: { data: [challengeID], method: 'NewProofOfStorageChallenge' } }
-			handlers.forEach(handler => handler([newChallenge]))
-			*/
+			if let Some(contract) = <GetContractByID<T>>::get(&contract_id){
+				let ranges = contract.ranges;
+				/*
+				const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
+				const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
+				const challenge = { contract: contractID, chunks }
+				const challengeID = DB.challenges.push(challenge)
+				challenge.id = challengeID
+				// emit events
+				const newChallenge = { event: { data: [challengeID], method: 'NewProofOfStorageChallenge' } }
+				handlers.forEach(handler => handler([newChallenge]))
+				*/
+			} else {
+				//some err
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_proof_of_storage(origin, T::ChallengeId, proof: Proof ){
+		fn submit_proof_of_storage(origin, challenge_id: T::ChallengeId, proof: Proof ){
 			let user_address = ensure_signed(origin)?;
-			let challenge = <GetChallengeByID>::Get(&ChallengeId);
+			if let Some(challenge) = <GetChallengeByID<T>>::get(&challenge_id){
 			/*
 			const challenge = DB.challenges[challengeID - 1]
 		    const isValid = validateProof(proof, challenge)
@@ -513,10 +531,11 @@ decl_module!{
 		    // emit events
 		    handlers.forEach(handler => handler([proofValidation]))
 			*/
+			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn request_attestation(origin, T::ContractId ){
+		fn request_attestation(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			/*
 			const [ attestorID ] = getRandom(DB.attestors)
@@ -529,7 +548,7 @@ decl_module!{
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_attestation_report(origin, T::AttestationId, report: Report ){
+		fn submit_attestation_report(origin, attestation_id: T::AttestationId, report: Report ){
 			let user_address = ensure_signed(origin)?;
 			/*
 			console.log('Submitting Proof Of Retrievability Attestation with ID:', attestationID)
@@ -557,19 +576,18 @@ impl<T: Trait> Module<T> {
 		let mut random_plan_option = None;
 		match (encoder_option, hoster_option, plan_option) {
 			(Some(encoder_id), Some(hoster_id), Some(plan_id)) => {
-				<GetNextContractID<T>>::mutate(|x|{
+				let x = <GetNextContractID<T>>::get();
 					if let Some(plan) = <GetPlanByID<T>>::get(plan_id){
-						let new_contract = Contract {
+						let new_contract = Contract::<T> {
 							id: x.clone(),
 							plan: plan_id,
 							ranges: plan.ranges,
 							encoder: encoder_id,
 							hoster: hoster_id
 						};
-						<GetContractByID<T>>::insert(x.into(), new_contract);
-						*x = *x+One::one();
+						<GetContractByID<T>>::insert(x, new_contract);
+						<GetNextContractID<T>>::put(x+One::one());
 					};
-				});
 			},
 			(None, None, Some(plan_id)) => {  // Condition: if planID && encoders available & hosters available
 				// todo get random
@@ -610,13 +628,13 @@ impl<T: Trait> Module<T> {
 	// ---
 
 	fn unique_nonce() -> u64 {
-		let nonce = <Nonce>::get();
+		let nonce : u64 = <Nonce>::get();
 		<Nonce>::put(nonce+1);
 		nonce
 	}
 
 	/*
-	fn Get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<u64> {
+	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<u64> {
 		let members : Vec<u64> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
 
 		}).collect();
