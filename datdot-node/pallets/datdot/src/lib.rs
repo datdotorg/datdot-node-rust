@@ -501,6 +501,16 @@ decl_module!{
 			let user_address = ensure_signed(origin)?;
 			if let Some(contract) = <GetContractByID<T>>::get(&contract_id){
 				let ranges = contract.ranges;
+				let random_chunks = Self::random_from_ranges(ranges);
+				let challenge_id = <GetNextChallengeID<T>>::get();
+				let challenge = Challenge::<T> {
+					id: challenge_id.clone(),
+					contract: contract_id,
+					chunks: random_chunks
+				};
+				<GetChallengeByID<T>>::insert(challenge_id, challenge);
+				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
+				Self::deposit_event(RawEvent::NewProofOfStorageChallenge(challenge_id));
 				/*
 				const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
 				const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
@@ -610,6 +620,13 @@ impl<T: Trait> Module<T> {
 			(_, _, _) => ()
 		}
 	}
+
+	fn random_from_ranges(ranges: Ranges<T::ChunkIndex>) -> Vec<T::ChunkIndex>{
+		//TODO, currently only returns first chunk of every available range,
+		//should return some random selection.
+		ranges.iter().map(|x|x.0).collect()
+	}
+
 	//borrowing from society pallet ---
 	fn pick_usize<'a, R: RngCore>(rng: &mut R, max: usize) -> usize {
 
