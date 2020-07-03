@@ -113,7 +113,6 @@ pub trait Trait: system::Trait{
 ******************************************************************************/
 decl_event!(
 	pub enum Event<T> where
-	<T as Trait>::AttestorId,
 	<T as Trait>::EncoderId, 
 	<T as Trait>::HosterId, 
 	<T as Trait>::FeedId, 
@@ -133,7 +132,7 @@ decl_event!(
 		/// New proof-of-storage challenge
 		NewProofOfStorageChallenge(ChallengeId),
 		/// Proof-of-storage confirmed
-		ProofOfStorageConfirmed(AttestorId, ChallengeId),
+		ProofOfStorageConfirmed(ChallengeId),
 		/// Proof-of-storage not confirmed
 		ProofOfStorageFailed(ChallengeId),
 		/// Attestation of retrievability requested
@@ -529,7 +528,12 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_proof_of_storage(origin, challenge_id: T::ChallengeId, proof: Proof ){
 			let user_address = ensure_signed(origin)?;
-			if let Some(challenge) = <GetChallengeByID<T>>::get(&challenge_id){
+			if let Some(challenge) = <GetChallengeByID<T>>::get(challenge_id.clone()){
+				if Self::validate_proof(proof, challenge){
+					Self::deposit_event(RawEvent::ProofOfStorageConfirmed(challenge_id.clone()));
+				} else {
+					Self::deposit_event(RawEvent::ProofOfStorageFailed(challenge_id.clone()));
+				}
 			/*
 			const challenge = DB.challenges[challengeID - 1]
 		    const isValid = validateProof(proof, challenge)
@@ -541,6 +545,8 @@ decl_module!{
 		    // emit events
 		    handlers.forEach(handler => handler([proofValidation]))
 			*/
+			} else {
+				// TODO invalid challenge
 			}
 		}
 
@@ -625,6 +631,11 @@ impl<T: Trait> Module<T> {
 		//TODO, currently only returns first chunk of every available range,
 		//should return some random selection.
 		ranges.iter().map(|x|x.0).collect()
+	}
+
+	fn validate_proof(proof: Proof, challenge: Challenge<T>) -> bool {
+		//TODO validate proof!
+		true
 	}
 
 	//borrowing from society pallet ---
