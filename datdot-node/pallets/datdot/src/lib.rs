@@ -94,13 +94,7 @@ pub trait Trait: system::Trait{
 	MaybeSerializeDeserialize + Debug;
 	type PlanId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type AttestorId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
 	type AttestationId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
-	type HosterId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
-	type EncoderId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
 	type ChunkIndex: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
@@ -113,9 +107,8 @@ pub trait Trait: system::Trait{
 ******************************************************************************/
 decl_event!(
 	pub enum Event<T> where
-	<T as Trait>::EncoderId, 
-	<T as Trait>::HosterId, 
 	<T as Trait>::FeedId, 
+	<T as Trait>::UserId, 
 	<T as Trait>::ContractId,
 	<T as Trait>::PlanId,
 	<T as Trait>::ChallengeId,
@@ -126,7 +119,8 @@ decl_event!(
 		/// New hosting plan by publisher for selected feed (many possible plans per feed)
 		NewPlan(PlanId),
 		/// A new contract between publisher, encoder, and hoster (many contracts per plan)
-		NewContract(EncoderId, HosterId, FeedId, ContractId, Ranges<ChunkIndex>),
+		/// (Encoder, Hoster,...)
+		NewContract(UserId, UserId, FeedId, ContractId, Ranges<ChunkIndex>),
 		/// Hosting contract started
 		HostingStarted(ContractId),
 		/// New proof-of-storage challenge
@@ -153,10 +147,13 @@ enum Role {
 	Attestor
 }
 
+type NoiseKey = Vec<u8>;
+
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct User<T: Trait> {
 	id: T::UserId,
-	address: T::AccountId
+	address: T::AccountId,
+	noise_key: Option<NoiseKey>
 }
 
 type FeedKey = Public;
@@ -203,8 +200,8 @@ struct Contract<T: Trait> {
 	id: T::ContractId,
 	plan: T::PlanId,
 	ranges: Ranges<T::ChunkIndex>,
-	encoder: T::EncoderId,
-	hoster: T::HosterId
+	encoder: T::UserId,
+	hoster: T::UserId
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
@@ -331,9 +328,8 @@ pub struct Proof {
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Attestation<T: Trait> {
 	id: T::AttestationId,
-	attestor: T::AttestorId,
-	contract: T::ContractId,
-	chunks: Vec<T::ChunkIndex>
+	attestor: T::UserId,
+	contract: T::ContractId
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -379,33 +375,24 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn new_user(origin){
 			let user_address = ensure_signed(origin)?;
-			if <GetIDByUser<T>>::contains_key(&user_address){
-				// some err
-			} else {
-				let mut x = <GetNextUserID<T>>::get();
-					let new_user = User {
-						id: x.clone(),
-						address: user_address.clone()
-					};
-					<GetUserByID<T>>::insert(x, new_user);
-					<GetIDByUser<T>>::insert(&user_address, x.clone());
-				<GetNextUserID<T>>::put(x+One::one());
-			}
+			Self::reg_user(user_address, None);
 		}
 
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_encoder(origin){
+		fn register_encoder(origin, noise_key: NoiseKey){
 			let user_address = ensure_signed(origin)?;
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				Self::reg_user(user_address, Some(noise_key));
 				<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::Some(0));
 			}
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_hoster(origin){
+		fn register_hoster(origin, noise_key: NoiseKey){
 			let user_address = ensure_signed(origin)?;
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+				Self::reg_user(user_address, Some(noise_key));
 				<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::Some(0));
 			}
 		}
@@ -553,6 +540,15 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn request_attestation(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
+			if let Some(rand_attestor) = Self::get_random_of_role(&[0], &Role::Attestor, 1).pop(){
+				let attestation_id = <GetNextAttestationID<T>>::get();
+				let attestation = Attestation::<T> {
+					id: attestation_id.clone(),
+					attestor: rand_attestor,
+					contract: contract_id
+				};
+
+			}
 			/*
 			const [ attestorID ] = getRandom(DB.attestors)
 		    const attestation = { contract: contractID , attestor: attestorID }
@@ -566,6 +562,9 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_attestation_report(origin, attestation_id: T::AttestationId, report: Report ){
 			let user_address = ensure_signed(origin)?;
+			if let Some(attestation) = <GetAttestationByID<T>>::get(attestation_id){
+				
+			}
 			/*
 			console.log('Submitting Proof Of Retrievability Attestation with ID:', attestationID)
 			// emit events
@@ -582,9 +581,32 @@ decl_module!{
 ******************************************************************************/
 impl<T: Trait> Module<T> {
 
+	fn reg_user(user_address: T::AccountId, noise_key: Option<NoiseKey>){
+		if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
+			if let Some(user) = <GetUserByID<T>>::get(&user_id){
+				<GetUserByID<T>>::insert(user_id, User::<T> {
+					noise_key: noise_key,
+					..user
+				});
+			} else {
+				// some err
+			}
+		} else {
+			let mut x = <GetNextUserID<T>>::get();
+				let new_user = User {
+					id: x.clone(),
+					address: user_address.clone(),
+					noise_key: noise_key
+				};
+				<GetUserByID<T>>::insert(x, new_user);
+				<GetIDByUser<T>>::insert(&user_address, x.clone());
+			<GetNextUserID<T>>::put(x+One::one());
+		}
+	}
+
 	fn make_new_contract(
-		encoder_option: Option<T::EncoderId>,
-		hoster_option: Option<T::HosterId>,
+		encoder_option: Option<T::UserId>,
+		hoster_option: Option<T::UserId>,
 		plan_option: Option<T::PlanId>
 	){
 		let mut random_hoster_option = None;
@@ -606,19 +628,24 @@ impl<T: Trait> Module<T> {
 					};
 			},
 			(None, None, Some(plan_id)) => {  // Condition: if planID && encoders available & hosters available
-				// todo get random
+				random_hoster_option = Self::get_random_of_role(&[], &Role::Hoster, 1).pop();
+				random_encoder_option = Self::get_random_of_role(&[], &Role::Encoder, 1).pop();
 				if random_encoder_option.is_some() && random_hoster_option.is_some(){
 					Self::make_new_contract(random_encoder_option, random_hoster_option, plan_option);
 				}
 			},
 			(None, Some(hoster_id), None) => { //Condition: if hosterID && encoders available & plans available
-				// todo get random
+				random_encoder_option = Self::get_random_of_role(&[], &Role::Encoder, 1).pop();
+				let plans : Vec<T::PlanId> = <GetPlanByID<T>>::iter().map(|x|x.0).collect();
+				random_plan_option = Self::get_random_of_vec(&[], plans, 1).pop();
 				if random_encoder_option.is_some() && random_plan_option.is_some(){
 					Self::make_new_contract(random_encoder_option, hoster_option, random_plan_option);
 				}
 			},
 			(Some(encoder_id), None, None) => { //Condition: if encoderID && hosters available & plans available
-				// todo get random
+				random_hoster_option = Self::get_random_of_role(&[], &Role::Hoster, 1).pop();
+				let plans : Vec<T::PlanId> = <GetPlanByID<T>>::iter().map(|x|x.0).collect();
+				random_plan_option = Self::get_random_of_vec(&[], plans, 1).pop();
 				if random_hoster_option.is_some() && random_plan_option.is_some(){
 					Self::make_new_contract(encoder_option, random_hoster_option, random_plan_option);
 				}
@@ -661,29 +688,47 @@ impl<T: Trait> Module<T> {
 		nonce
 	}
 
-	/*
-	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<u64> {
-		let members : Vec<u64> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
-
-		}).collect();
-		match members.len() {
-			0 => members,
-			_ => {
-				let nonce : u64 = Self::unique_nonce();
-				let mut random_select: Vec<u64> = Vec::new();
+	fn get_random_of_vec<Item: Copy>(influence: &[u8], members: Vec<Item>, count: u32) -> Vec<Item>{
+		let match_count : usize = count.try_into().unwrap();
+		if members.len() <= match_count { members } else {
+			let nonce : u64 = Self::unique_nonce();
+			let mut random_select: Vec<Item> = Vec::new();
 				// added indeces to seed in order to ensure challenges Get unique randomness.
-				let seed = (nonce, influence, T::Randomness::random(b"dat_random_attestors"))
-					.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
-					.expect("input is padded with zeroes; qed");
-				let mut rng = ChaChaRng::from_seed(seed);
-				let pick_attestor = |_| Self::pick_item(&mut rng, &members[..]).expect("exited if members empty; qed");
-				for attestor in (0..count).map(pick_attestor){
-					random_select.push(*attestor);
-				}
-				random_select
-			},
+			let seed = (nonce, T::Randomness::random(influence))
+				.using_encoded(|b| <[u8; 32]>::decode(&mut TrailingZeroInput::new(b)))
+				.expect("input is padded with zeroes; qed");
+			let mut rng = ChaChaRng::from_seed(seed);
+			let pick_item = |_| Self::pick_item(&mut rng, &members[..]).expect("exited if members empty; qed");
+			for item in (0..count).map(pick_item){
+				random_select.push(*item);
+			}
+			random_select
 		}
 	}
-	*/
+
+	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<T::UserId> {
+		let members : Vec<T::UserId> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
+			if x.1.is_some(){
+				Some(x.0)
+			} else {
+				None
+			}
+		}).collect();
+		Self::get_random_of_vec(influence, members, count)
+	}
+
+	
+	fn get_random_of_role_filtered<F>(influence: &[u8], role: &Role, count: u32, filter: F) -> Vec<T::UserId>
+	where F: Fn(RoleValue) -> bool {
+		let members : Vec<T::UserId> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
+			if filter(x.1){
+				Some(x.0)
+			} else {
+				None
+			}
+		}).collect();
+		Self::get_random_of_vec(influence, members, count)
+	}
+	
 
 }
