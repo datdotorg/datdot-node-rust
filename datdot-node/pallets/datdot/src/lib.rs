@@ -96,8 +96,6 @@ pub trait Trait: system::Trait{
 	MaybeSerializeDeserialize + Debug;
 	type AttestationId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type ChunkIndex: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
 	// ---
 }
 
@@ -112,7 +110,6 @@ decl_event!(
 	<T as Trait>::ContractId,
 	<T as Trait>::PlanId,
 	<T as Trait>::ChallengeId,
-	<T as Trait>::ChunkIndex
 	{
 		/// New data feed registered
 		NewFeed(FeedId),
@@ -139,6 +136,7 @@ decl_event!(
 );
 
 type RoleValue = Option<u32>;
+type ChunkIndex = u64;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 enum Role {
@@ -192,14 +190,14 @@ struct Plan<T: Trait> {
 	id: T::PlanId,
 	feed: T::FeedId,
 	publisher: T::UserId,
-	ranges: Ranges<T::ChunkIndex>
+	ranges: Ranges<ChunkIndex>
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Contract<T: Trait> {
 	id: T::ContractId,
 	plan: T::PlanId,
-	ranges: Ranges<T::ChunkIndex>,
+	ranges: Ranges<ChunkIndex>,
 	encoder: T::UserId,
 	hoster: T::UserId
 }
@@ -208,7 +206,7 @@ struct Contract<T: Trait> {
 struct Challenge<T: Trait> {
 	id: T::ChallengeId,
 	contract: T::ContractId,
-	chunks: Vec<T::ChunkIndex>
+	chunks: Vec<ChunkIndex>
 }
 
 
@@ -430,7 +428,7 @@ decl_module!{
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn publish_feed_and_plan(origin, merkle_root: (Public, TreeHashPayload, H512), ranges: Ranges<T::ChunkIndex>){
+		fn publish_feed_and_plan(origin, merkle_root: (Public, TreeHashPayload, H512), ranges: Ranges<ChunkIndex>){
 			let user_address = ensure_signed(origin)?;
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
 				let mut feed_id : T::FeedId;
@@ -654,7 +652,7 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn random_from_ranges(ranges: Ranges<T::ChunkIndex>) -> Vec<T::ChunkIndex>{
+	fn random_from_ranges(ranges: Ranges<ChunkIndex>) -> Vec<ChunkIndex>{
 		//TODO, currently only returns first chunk of every available range,
 		//should return some random selection.
 		ranges.iter().map(|x|x.0).collect()

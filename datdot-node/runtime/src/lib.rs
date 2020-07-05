@@ -183,6 +183,7 @@ impl system::Trait for Runtime {
 	type OnKilledAccount = ();
 	/// The data to be stored in an account.
 	type AccountData = balances::AccountData<Balance>;
+	type BaseCallFilter = ();
 }
 
 parameter_types! {
@@ -239,17 +240,18 @@ parameter_types! {
 	pub const ChallengeDelay: u32 = 5;
 }
 
+type DatDotIdType = u32;
+
 impl dat_verify::Trait for Runtime {
 	type Event = Event;
 	type Hash = Hash;
 	type Randomness = RandomnessCollectiveFlip;
-	type ForceOrigin = dat_verify::EnsureSeeder<Runtime>;
-	type AttestorsPerChallenge = AttestorsPerChallenge;
-	type MinEncodersPerHoster = MinEncodersPerHoster;
-	type MinHostersPerArchive = MinHostersPerArchive;
-	type ChallengeDelay = ChallengeDelay;
-	type Proposal = Call;
-	type Scheduler = Scheduler;
+	type FeedId = DatDotIdType;
+	type UserId = DatDotIdType;
+	type ContractId = DatDotIdType;
+	type ChallengeId = DatDotIdType;
+	type PlanId = DatDotIdType;
+	type AttestationId = DatDotIdType;
 
 }
 
