@@ -1,6 +1,68 @@
 {
   "Address": "AccountId",
   "LookupSource": "AccountId",
+  "RoleValue": "Option<u32>",
+  "Public": "[u8; 32]",
+  "ChunkIndex": "u64",
+  "FeedId": "u32",
+  "UserId": "u32",
+  "ContractId": "u32",
+  "ChallengeId": "u32",
+  "PlanId": "u32",
+  "AttestationId": "u32",
+  "NoiseKey": "Vec<u8>",
+  "FeedKey": "Public",
+  "Ranges": "Vec<(C, C)>",
+  "Nonce": "u64",
+  "Role": {
+    "_enum": [
+      "Encoder",
+      "Hoster",
+      "Attestor"
+    ]
+  },
+  "User": {
+    "id": "UserId",
+    "address": "AccountId",
+    "noise_key": "Option<NoiseKey>"
+  },
+  "Feed": {
+    "id": "FeedId",
+    "publickey": "FeedKey",
+    "meta": "TreeRoot"
+  },
+  "ParentHashInRoot": {
+    "hash": "H256",
+    "hash_number": "u64",
+    "total_length": "u64"
+  },
+  "TreeRoot": {
+    "signature": "H512",
+    "hash_type": "u8",
+    "children": "Vec<ParentHashInRoot>"
+  },
+  "TreeHashPayload": {
+    "hash_type": "u8",
+    "children": "Vec<ParentHashInRoot>"
+  },
+  "Plan": {
+    "id": "PlanId",
+    "feed": "FeedId",
+    "publisher": "UserId",
+    "ranges": "Ranges<ChunkIndex>"
+  },
+  "Contract": {
+    "id": "ContractId",
+    "plan": "PlanId",
+    "ranges": "Ranges<ChunkIndex>",
+    "encoder": "UserId",
+    "hoster": "UserId"
+  },
+  "Challenge": {
+    "id": "ChallengeId",
+    "contract": "ContractId",
+    "chunks": "Vec<ChunkIndex>"
+  },
   "Node": {
     "index": "u64",
     "hash": "H256",
@@ -11,48 +73,13 @@
     "nodes": "Vec<Node>",
     "signature": "Option<Signature>"
   },
-  "ChunkHashPayload": {
-    "hash_type": "u8",
-    "chunk_length": "u64",
-    "chunk_content": "Vec<u8>"
-  },
-  "ParentHashPayload": {
-    "hash_type": "u8",
-    "total_length": "u64",
-    "child_hashes": "[H256; 2]"
-  },
-  "ParentHashInRoot": {
-    "hash": "H256",
-    "hash_number": "u64",
-    "total_length": "u64"
-  },
-  "TreeHashPayload": {
-    "hash_type": "u8",
-    "children": "Vec<ParentHashInRoot>"
-  },
   "Attestation": {
+    "id": "AttestationId",
+    "attestor": "UserId",
+    "contract": "ContractId"
+  },
+  "Report": {
     "location": "u8",
     "latency": "Option<u8>"
-  },
-  "ChallengeAttestations": {
-    "expected_attestors": "Vec<u64>",
-    "expected_friends": "Vec<u64>",
-    "completed": "Vec<(u64, Attestation)>"
-  },
-  "HostedArchive": {
-    "encoded": "Vec<(u64,(u64, u64))>",
-    "encoding": "Vec<(u64,(u64, u64))>",
-    "state": "BTreeMap<u64, Challenge>"
-  },
-  "Challenge": {
-    "_enum": {
-      "Active": "u64",
-      "Attesting": "ChallengeAttestation"
-    }
-  },
-  "DatIdIndex": "u64",
-  "DatIdVec": "Vec<DatIdIndex>",
-  "UserIdIndex": "u64",
-  "DatSize": "u64",
-  "Public": "[u8; 32]"
+  }
 }
