@@ -12,11 +12,9 @@
 	"FeedKey": "Public",
 	"Ranges": "Vec<(C, C)>",
 	"Nonce": "u64",
-	"Role": "{
-		Encoder,
-		Hoster,
-		Attestor
-	}",
+	"Role": {
+		"_enum": ["Encoder", "Hoster", "Attestor"]
+	},
 	"User": {
 		"id": "UserId",
 		"address": "AccountId",
@@ -45,7 +43,7 @@
 		"id": "PlanId",
 		"feed": "FeedId",
 		"publisher": "UserId",
-		"ranges": "Ranges<ChunkIndex>	"
+		"ranges": "Ranges<ChunkIndex>"
 	},
 	"Contract": {
 		"id": "ContractId",
