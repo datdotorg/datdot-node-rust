@@ -5,7 +5,7 @@ use sc_cli::SubstrateCli;
 
 impl SubstrateCli for Cli {
 	fn impl_name() -> &'static str {
-		"Kitchen Node"
+		"Datdot Node"
 	}
 
 	fn impl_version() -> &'static str {
@@ -21,7 +21,7 @@ impl SubstrateCli for Cli {
 	}
 
 	fn support_url() -> &'static str {
-		"https://github.com/substrate-developer-hub/recipes/issues"
+		"https://github.com/playproject-io/datdot-substrate/issues"
 	}
 
 	fn copyright_start_year() -> i32 {
