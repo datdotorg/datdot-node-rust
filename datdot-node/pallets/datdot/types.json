@@ -10,7 +10,7 @@
 	"AttestationId": "u32",
 	"NoiseKey": "Vec<u8>",
 	"FeedKey": "Public",
-	"Ranges": "Vec<(C, C)>",
+	"Ranges": "Vec<(ChunkIndex, ChunkIndex)>",
 	"Nonce": "u64",
 	"Role": {
 		"_enum": ["Encoder", "Hoster", "Attestor"]
