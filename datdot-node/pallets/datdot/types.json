@@ -8,7 +8,7 @@
 	"ChallengeId": "u32",
 	"PlanId": "u32",
 	"AttestationId": "u32",
-	"NoiseKey": "Vec<u8>",
+	"NoiseKey": "H512",
 	"FeedKey": "Public",
 	"Ranges": "Vec<(ChunkIndex, ChunkIndex)>",
 	"Nonce": "u64",

@@ -46,8 +46,8 @@ use frame_system::{
 };
 use codec::{
 	Encode,
-	Decode, 
-	Codec, 
+	Decode,
+	Codec,
 	EncodeLike
 };
 use sp_core::{
@@ -105,8 +105,7 @@ pub trait Trait: system::Trait{
 ******************************************************************************/
 decl_event!(
 	pub enum Event<T> where
-	<T as Trait>::FeedId, 
-	<T as Trait>::UserId, 
+	<T as Trait>::FeedId,
 	<T as Trait>::ContractId,
 	<T as Trait>::PlanId,
 	<T as Trait>::ChallengeId,
@@ -117,7 +116,7 @@ decl_event!(
 		NewPlan(PlanId),
 		/// A new contract between publisher, encoder, and hoster (many contracts per plan)
 		/// (Encoder, Hoster,...)
-		NewContract(UserId, UserId, FeedId, ContractId, Ranges<ChunkIndex>),
+		NewContract(ContractId),
 		/// Hosting contract started
 		HostingStarted(ContractId),
 		/// New proof-of-storage challenge
@@ -145,7 +144,7 @@ enum Role {
 	Attestor
 }
 
-type NoiseKey = Vec<u8>;
+type NoiseKey = H512;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct User<T: Trait> {
@@ -257,7 +256,7 @@ impl Node {
 		}
 		if max_index > offset {
 			let mut next_result = true;
-			while next_result {	
+			while next_result {
 				match result {
 					Some(index) => {
 						if index + interval + furthest_leaf > max_index {
@@ -267,7 +266,7 @@ impl Node {
 						}
 					},
 					None => {
-						result = Some(offset); 
+						result = Some(offset);
 					},
 				}
 			}
@@ -561,7 +560,7 @@ decl_module!{
 		fn submit_attestation_report(origin, attestation_id: T::AttestationId, report: Report ){
 			let user_address = ensure_signed(origin)?;
 			if let Some(attestation) = <GetAttestationByID<T>>::get(attestation_id){
-				
+
 			}
 			/*
 			console.log('Submitting Proof Of Retrievability Attestation with ID:', attestationID)
@@ -607,6 +606,7 @@ impl<T: Trait> Module<T> {
 		hoster_option: Option<T::UserId>,
 		plan_option: Option<T::PlanId>
 	){
+		let mut contract_id : T::ContractId;
 		let mut random_hoster_option = None;
 		let mut random_encoder_option = None;
 		let mut random_plan_option = None;
@@ -621,8 +621,10 @@ impl<T: Trait> Module<T> {
 							encoder: encoder_id,
 							hoster: hoster_id
 						};
-						<GetContractByID<T>>::insert(x, new_contract);
+						contract_id = x.clone();
+						<GetContractByID<T>>::insert(x, new_contract.clone());
 						<GetNextContractID<T>>::put(x+One::one());
+						Self::deposit_event(RawEvent::NewContract(contract_id.clone()));
 					};
 			},
 			(None, None, Some(plan_id)) => {  // Condition: if planID && encoders available & hosters available
@@ -715,7 +717,7 @@ impl<T: Trait> Module<T> {
 		Self::get_random_of_vec(influence, members, count)
 	}
 
-	
+
 	fn get_random_of_role_filtered<F>(influence: &[u8], role: &Role, count: u32, filter: F) -> Vec<T::UserId>
 	where F: Fn(RoleValue) -> bool {
 		let members : Vec<T::UserId> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
@@ -727,6 +729,6 @@ impl<T: Trait> Module<T> {
 		}).collect();
 		Self::get_random_of_vec(influence, members, count)
 	}
-	
+
 
 }
