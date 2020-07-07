@@ -382,6 +382,7 @@ decl_module!{
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
 				Self::reg_user(user_address, Some(noise_key));
 				<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::Some(0));
+				Self::make_new_contract(Some(user_id.clone()), None, None);
 			}
 		}
 
@@ -391,6 +392,7 @@ decl_module!{
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
 				Self::reg_user(user_address, Some(noise_key));
 				<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::Some(0));
+				Self::make_new_contract(None, Some(user_id.clone()), None);
 			}
 		}
 
