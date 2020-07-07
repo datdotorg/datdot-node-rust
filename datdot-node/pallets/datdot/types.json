@@ -8,8 +8,9 @@
 	"ChallengeId": "u32",
 	"PlanId": "u32",
 	"AttestationId": "u32",
-	"NoiseKey": "H512",
+	"NoiseKey": "Public",
 	"FeedKey": "Public",
+	"Proof": "Public",
 	"Ranges": "Vec<(ChunkIndex, ChunkIndex)>",
 	"Nonce": "u64",
 	"Role": {
@@ -61,11 +62,6 @@
 		"index": "u64",
 		"hash": "H256",
 		"size": "u64"
-	},
-	"Proof": {
-		"index": "u64",
-		"nodes": "Vec<Node>",
-		"signature": "Option<Signature>"
 	},
 	"Attestation": {
 		"id": "AttestationId",

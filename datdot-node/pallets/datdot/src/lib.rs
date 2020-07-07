@@ -109,6 +109,7 @@ decl_event!(
 	<T as Trait>::ContractId,
 	<T as Trait>::PlanId,
 	<T as Trait>::ChallengeId,
+	<T as Trait>::AttestationId
 	{
 		/// New data feed registered
 		NewFeed(FeedId),
@@ -126,11 +127,11 @@ decl_event!(
 		/// Proof-of-storage not confirmed
 		ProofOfStorageFailed(ChallengeId),
 		/// Attestation of retrievability requested
-		NewAttestation(ChallengeId),
+		NewAttestation(AttestationId),
 		/// Proof of retrievability confirmed
-		AttestationReportConfirmed(ChallengeId),
+		AttestationReportConfirmed(AttestationId),
 		/// Data serving not verified
-		AttestationReportFailed(ChallengeId),
+		AttestationReportFailed(AttestationId),
 	}
 );
 
@@ -144,7 +145,7 @@ enum Role {
 	Attestor
 }
 
-type NoiseKey = H512;
+type NoiseKey = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct User<T: Trait> {
@@ -207,8 +208,6 @@ struct Challenge<T: Trait> {
 	contract: T::ContractId,
 	chunks: Vec<ChunkIndex>
 }
-
-
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Node {
@@ -315,12 +314,14 @@ impl Node {
 	}
 }
 
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-pub struct Proof {
-	index: u64,
-	nodes: Vec<Node>,
-	signature: Option<Signature>
-}
+// #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+// pub struct Proof {
+// 	index: u64,
+// 	nodes: Vec<Node>,
+// 	signature: Option<Signature>
+// }
+
+type Proof = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Attestation<T: Trait> {
@@ -493,9 +494,9 @@ decl_module!{
 					contract: contract_id,
 					chunks: random_chunks
 				};
-				<GetChallengeByID<T>>::insert(challenge_id, challenge);
+				<GetChallengeByID<T>>::insert(challenge_id, challenge.clone());
 				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
-				Self::deposit_event(RawEvent::NewProofOfStorageChallenge(challenge_id));
+				Self::deposit_event(RawEvent::NewProofOfStorageChallenge(challenge_id.clone()));
 				/*
 				const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
 				const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
@@ -512,10 +513,18 @@ decl_module!{
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_proof_of_storage(origin, challenge_id: T::ChallengeId, proof: Proof ){
+		fn submit_proof_of_storage(origin, challenge_id: T::ChallengeId, proofs: Vec<Proof> ){
 			let user_address = ensure_signed(origin)?;
-			if let Some(challenge) = <GetChallengeByID<T>>::get(challenge_id.clone()){
-				if Self::validate_proof(proof, challenge){
+			let mut success: bool = true;
+			if let Some(challenge) = <GetChallengeByID<T>>::get(&challenge_id){
+				for proof in proofs {
+					if Self::validate_proof(proof.clone(), challenge.clone()){
+						success = success && true;
+					} else {
+						success = success && false;
+					}
+				}
+				if success {
 					Self::deposit_event(RawEvent::ProofOfStorageConfirmed(challenge_id.clone()));
 				} else {
 					Self::deposit_event(RawEvent::ProofOfStorageFailed(challenge_id.clone()));
@@ -546,7 +555,8 @@ decl_module!{
 					attestor: rand_attestor,
 					contract: contract_id
 				};
-
+				<GetAttestationByID<T>>::insert(attestation_id, attestation.clone());
+				Self::deposit_event(RawEvent::NewAttestation(attestation_id.clone()));
 			}
 			/*
 			const [ attestorID ] = getRandom(DB.attestors)
@@ -559,10 +569,27 @@ decl_module!{
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_attestation_report(origin, attestation_id: T::AttestationId, report: Report ){
+		fn submit_attestation_report(origin, attestation_id: T::AttestationId, reports: Vec<Report> ){
 			let user_address = ensure_signed(origin)?;
-			if let Some(attestation) = <GetAttestationByID<T>>::get(attestation_id){
-
+			let mut success: bool = true;
+			if let Some(attestation) = <GetAttestationByID<T>>::get(&attestation_id){
+				for report in reports {
+					match report.latency {
+						Some(_) => {
+							// report passed
+							success = success && true;
+						},
+						_ => {
+							// report failed
+							success = success && false;
+						}
+					}
+				}
+				if success {
+					Self::deposit_event(RawEvent::AttestationReportConfirmed(attestation_id.clone()));
+				} else {
+					Self::deposit_event(RawEvent::AttestationReportFailed(attestation_id.clone()));
+				}
 			}
 			/*
 			console.log('Submitting Proof Of Retrievability Attestation with ID:', attestationID)
@@ -597,7 +624,7 @@ impl<T: Trait> Module<T> {
 					address: user_address.clone(),
 					noise_key: noise_key
 				};
-				<GetUserByID<T>>::insert(x, new_user);
+				<GetUserByID<T>>::insert(x, new_user.clone());
 				<GetIDByUser<T>>::insert(&user_address, x.clone());
 			<GetNextUserID<T>>::put(x+One::one());
 		}
