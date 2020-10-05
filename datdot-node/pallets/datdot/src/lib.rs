@@ -27,6 +27,7 @@ use frame_support::{
 		Get,
 		Randomness,
 		schedule::Named as ScheduleNamed,
+		LockableCurrency
 	},
 	weights::{
 		Pays,
@@ -66,10 +67,14 @@ use sp_runtime::{
 		TrailingZeroInput,
 		AtLeast32Bit,
 		MaybeSerializeDeserialize,
-		Member
+		Member,
+		Scale
 	},
 };
-use sp_arithmetic::traits::{BaseArithmetic, One};
+use sp_arithmetic::{
+	Percent,
+	traits::{BaseArithmetic, One}
+};
 use sp_io::hashing::blake2_256;
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
@@ -79,6 +84,15 @@ use ed25519::{Public, Signature};
 ******************************************************************************/
 pub trait Trait: system::Trait{
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+
+	/// Type used for expressing timestamp.
+	type Moment: Parameter + Default + AtLeast32Bit
+		+ Scale<Self::BlockNumber, Output = Self::Moment> + Copy;
+
+	
+	/// The currency trait.
+	type Currency: LockableCurrency<Self::AccountId>;
+
 	type Hash:
 	Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + SimpleBitOps
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
@@ -151,7 +165,12 @@ type NoiseKey = Public;
 struct User<T: Trait> {
 	id: T::UserId,
 	address: T::AccountId,
-	noise_key: Option<NoiseKey>
+	attestor_key: Option<NoiseKey>,
+	encoder_key: Option<NoiseKey>,
+	hoster_key: Option<NoiseKey>,
+	attestor_form: Form<T::Moment>,
+	encoder_form: Form<T::Moment>,
+	hoster_form: Form<T::Moment>
 }
 
 type FeedKey = Public;
@@ -186,11 +205,24 @@ pub struct TreeHashPayload {
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
+pub struct PlanUntil<Time> {
+	time: Option<Time>,
+	budget: Option<u64>,
+	traffic: Option<u64>,
+	price: Option<u64>
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Plan<T: Trait> {
 	id: T::PlanId,
-	feed: T::FeedId,
-	publisher: T::UserId,
-	ranges: Ranges<ChunkIndex>
+	feeds: Vec<T::FeedId>,
+	from: T::Moment,
+	until: PlanUntil<T::Moment>,
+	importance: u8,
+	config: Config,
+	schedules: Schedule<T::Moment>,
+	sponsor: T::UserId,
+	unhosted_feeds: Vec<T::FeedId>
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
@@ -321,7 +353,7 @@ impl Node {
 // 	signature: Option<Signature>
 // }
 
-type Proof = Public;
+pub type Proof = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Attestation<T: Trait> {
@@ -335,19 +367,64 @@ pub struct Report {
 	location: u8,
 	latency: Option<u8>
 }
+#[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Performance {
+	availability: Percent,
+	bandwidth: (u64, Percent),
+	latency: (u16, Percent)
+}
+
+pub type Region = Vec<u8>;
+
+#[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Config {
+	performance: Performance,
+	regions: Vec<(Region, Performance)>
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Schedule<Time> {
+	duration: Time,
+	delay: Time,
+	interval: Time,
+	repeat: u32,
+	config: Config
+}
+
+#[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Form<Time> {
+	storage: u64,
+	idle_storage: u64,
+	from: Time,
+	until: Time,
+	schedules: Vec<Schedule<Time>>,
+	config: Config,
+}
 
 /******************************************************************************
   Storage items/db
 ******************************************************************************/
+/* expected js storage queries
+const queries = {
+	getFeedByID,
+	getFeedByKey,
+	getUserByID,
+	getPlanByID,
+	getContractByID,
+	getStorageChallengeByID,
+	getPerformanceChallengeByID,
+}
+*/
 decl_storage! {
 	trait Store for Module<T: Trait> as DatVerify {
 		// PUBLIC/API
 		pub GetFeedByID: map hasher(twox_64_concat) T::FeedId => Option<Feed<T>>;
+		pub GetFeedByKey: map hasher(twox_64_concat) FeedKey => Option<Feed<T>>;
         pub GetUserByID: map hasher(twox_64_concat) T::UserId => Option<User<T>>;
         pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Option<Contract<T>>;
         pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<Challenge<T>>;
 		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T>>;
-		pub GetAttestationByID: map hasher(twox_64_concat) T::AttestationId => Option<Attestation<T>>;
+		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::AttestationId => Option<Attestation<T>>;
 		// INTERNALLY REQUIRED STORAGE
 		pub GetNextFeedID: T::FeedId;
 		pub GetNextUserID: T::UserId;
@@ -370,15 +447,85 @@ decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event() = default;
 
-		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn new_user(origin){
-			let user_address = ensure_signed(origin)?;
-			Self::reg_user(user_address, None);
+		/*
+		if (type === 'publishFeed') _publishFeed(user, { name, nonce }, status, args)
+		else if (type === 'publishPlan') _publishPlan(user, { name, nonce }, status, args)
+		else if (type === 'registerEncoder') _registerEncoder(user, { name, nonce }, status, args)
+		else if (type === 'registerAttestor') _registerAttestor(user, { name, nonce }, status, args)
+		else if (type === 'registerHoster') _registerHoster(user, { name, nonce }, status, args)
+		else if (type === 'encodingDone') _encodingDone(user, { name, nonce }, status, args)
+		else if (type === 'hostingStarts') _hostingStarts(user, { name, nonce }, status, args)
+		else if (type === 'requestStorageChallenge') _requestStorageChallenge(user, { name, nonce }, status, args)
+		else if (type === 'requestPerformanceChallenge') _requestPerformanceChallenge(user, { name, nonce }, status, args)
+		else if (type === 'submitStorageChallenge') _submitStorageChallenge(user, { name, nonce }, status, args)
+		else if (type === 'submitPerformanceChallenge') _submitPerformanceChallenge(user, { name, nonce }, status, args)
+		// else if ... 
+		*/
+		
+		/*
+		const log = connections[name].log
+
+  		const [merkleRoot]  = args
+  		const [key, {hashType, children}, signature] = merkleRoot
+  		const keyBuf = Buffer.from(key, 'hex')
+  		// check if feed already exists
+  		if (DB.feedByKey[keyBuf.toString('hex')]) return
+  		const feed = { publickey: keyBuf.toString('hex'), meta: { signature, hashType, children } }
+  		const feedID = DB.feeds.push(feed)
+  		feed.id = feedID
+  		// push to feedByKey lookup array
+  		DB.feedByKey[keyBuf.toString('hex')] = feedID
+  		const userID = user.id
+  		feed.publisher = userID
+  		// Emit event
+  		const NewFeed = { event: { data: [feedID], method: 'FeedPublished' } }
+  		const event = [NewFeed]
+  		handlers.forEach(([name, handler]) => handler(event))
+  		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
+		*/
+		fn publish_feed(origin, merkle_root: (Public, TreeHashPayload, H512)){
+
 		}
 
+		/*
+		const log = connections[name].log
+  		log({ type: 'chain', body: [`Publishing a plan`] })
+  		const [plan] = args
+  		const { feeds, from, until, importance, config, schedules } =  plan
+  		const userID = user.id
+		plan.sponsor = userID // or patron?
+		const planID = DB.plans.push(plan)
+		plan.id = planID
+		// Add planID to unhostedPlans
+		DB.unhostedPlans.push(planID)
+		// Add feeds to unhosted
+		plan.unhostedFeeds = feeds
+		// Find hosters,encoders and attestors
+		tryContract({ plan, log })
+		// Emit event
+		const NewPlan = { event: { data: [planID], method: 'NewPlan' } }
+		const event = [NewPlan]
+		handlers.forEach(([name, handler]) => handler(event))
+		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
+		*/
+		fn publish_plan(origin, plan: Plan){
 
+		}
+
+		/*
+		const log = connections[name].log
+		const userID = user.id
+		const [encoderKey, form] = args
+		if (DB.users[userID-1].encoderKey) return log({ type: 'chain', body: [`User is already registered as encoder`] })
+		const keyBuf = Buffer.from(encoderKey, 'hex')
+		DB.users[userID - 1].encoderKey = keyBuf.toString('hex')
+		DB.users[userID - 1].encoderForm = form
+		DB.idleEncoders.push(userID)
+		tryContract({ log })
+
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_encoder(origin, noise_key: NoiseKey){
+		fn register_encoder(origin, encoder_key: NoiseKey, form: Form){
 			let user_address = ensure_signed(origin)?;
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
 				Self::reg_user(user_address, Some(noise_key));
@@ -387,8 +534,20 @@ decl_module!{
 			}
 		}
 
+		/*
+		const log = connections[name].log
+		const userID = user.id
+		const [hosterKey, form] = args
+		// @TODO emit event or make a callback to notify the user
+		if (DB.users[userID-1].hosterKey) return log({ type: 'chain', body: [`User is already registered as a hoster`] })
+		const keyBuf = Buffer.from(hosterKey, 'hex')
+		DB.users[userID - 1].hosterKey = keyBuf.toString('hex')
+		DB.users[userID - 1].hosterForm = form
+		DB.idleHosters.push(userID)
+		tryContract({ log })
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_hoster(origin, noise_key: NoiseKey){
+		fn register_hoster(origin, hoster_key: NoiseKey, form: Form){
 			let user_address = ensure_signed(origin)?;
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
 				Self::reg_user(user_address, Some(noise_key));
@@ -397,14 +556,26 @@ decl_module!{
 			}
 		}
 
+		/*
+		const userID = user.id
+		const [attestorKey, form] = args
+		if (DB.users[userID-1].attestorKey) return log({ type: 'chain', body: [`User is already registered as a attestor`] })
+		const keyBuf = Buffer.from(attestorKey, 'hex')
+		DB.users[userID - 1].attestorKey = keyBuf.toString('hex')
+		DB.users[userID - 1].attestorForm = form
+		DB.idleAttestors.push(userID)
+		checkAttestorJobs(log)
+		tryContract({ log })
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_attestor(origin){
+		fn register_attestor(origin, attestor_key: NoiseKey, form: Form){
 			let user_address = ensure_signed(origin)?;
 			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
 				<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::Some(0));
 			}
 		}
 
+		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_encoder(origin){
 			let user_address = ensure_signed(origin)?;
@@ -413,6 +584,7 @@ decl_module!{
 			}
 		}
 
+		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_hoster(origin){
 			let user_address = ensure_signed(origin)?;
@@ -421,6 +593,7 @@ decl_module!{
 			}
 		}
 
+		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_attestor(origin){
 			let user_address = ensure_signed(origin)?;
@@ -429,50 +602,39 @@ decl_module!{
 			}
 		}
 
-		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn publish_feed_and_plan(origin, merkle_root: (Public, TreeHashPayload, H512), ranges: Ranges<ChunkIndex>){
-			let user_address = ensure_signed(origin)?;
-			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-				let mut feed_id : T::FeedId;
-				let mut plan_id : T::PlanId;
-			//TODO -- currently re-registering existing feeds creates a new FeedID, should lookup first.
-			let next_feed_id = <GetNextFeedID<T>>::get();
-				let new_feed = Feed {
-					id: next_feed_id.clone(),
-					publickey: merkle_root.0,
-					meta: TreeRoot {
-						signature: merkle_root.2,
-						hash_type: merkle_root.1.hash_type,
-						children: merkle_root.1.children
-					}
-				};
-				<GetFeedByID<T>>::insert(next_feed_id, new_feed.clone());
-				feed_id = next_feed_id.clone();
-				<GetNextFeedID<T>>::put(next_feed_id+One::one());
-			let next_plan_id = <GetNextPlanID<T>>::get();
-				let new_plan = Plan::<T> {
-					id: next_plan_id.clone(),
-					publisher: user_id,
-					feed: feed_id,
-					ranges: ranges
-				};
-				<GetPlanByID<T>>::insert(next_plan_id, new_plan.clone());
-				plan_id = next_plan_id.clone();
-				<GetNextPlanID<T>>::put(next_plan_id+One::one());
-			Self::make_new_contract(None, None, Some(plan_id.clone()));
-			Self::deposit_event(RawEvent::NewFeed(feed_id));
-			Self::deposit_event(RawEvent::NewPlan(plan_id.clone()));
-			} else {
-				//some err
-			}
-		}
-
+		/*
+		const [ contractID ] = args
+		DB.contractsEncoded.push(contractID)
+		const contract = DB.contracts[contractID - 1]
+		const encoderIDs = contract.encoders
+		encoderIDs.forEach(encoderID => {
+			 if (!DB.idleEncoders.includes(encoderID))
+			  DB.idleEncoders.push(encoderID) 
+			})	
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn encoding_done(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			// DB.contractsEncoded.push(contractID)
 		}
 
+		/*
+		// @TODO check if encodingDone and only then trigger hostingStarts
+		const [ contractID ] = args
+		DB.contractsHosted.push(contractID)
+		const contract = DB.contracts[contractID - 1]
+		// if hosting starts, also the attestor finished job, add them to idleAttestors again
+		const attestorID = contract.attestor
+		if (!DB.idleAttestors.includes(attestorID)) {
+			DB.idleAttestors.push(attestorID)
+			checkAttestorJobs(log)
+		}
+		const userID = user.id
+		const confirmation = { event: { data: [contractID, userID], method: 'HostingStarted' } }
+		const event = [confirmation]
+		handlers.forEach(([name, handler]) => handler(event))
+		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn hosting_starts(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
@@ -482,8 +644,27 @@ decl_module!{
 			Self::deposit_event(RawEvent::HostingStarted(contract_id));
 		}
 
+		/*
+
+		const [ contractID, hosterID ] = args
+		const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
+		// @TODO currently we check one random chunk in each range => find better logic
+		const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
+		const storageChallenge = { contract: contractID, hoster: hosterID, chunks }
+		const storageChallengeID = DB.storageChallenges.push(storageChallenge)
+		storageChallenge.id = storageChallengeID
+		const attestorID = getAttestor(storageChallenge, log)
+		if (!attestorID) return
+		storageChallenge.attestor = attestorID
+		// emit events
+		const challenge = { event: { data: [storageChallengeID], method: 'NewStorageChallenge' } }
+		const event = [challenge]
+		handlers.forEach(([name, handler]) => handler(event))
+		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
+
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn request_proof_of_storage_challenge(origin, contract_id: T::ContractId ){
+		fn request_storage_challenge(origin, contract_id: T::ContractId, hoster_id: T::UserId ){
 			let user_address = ensure_signed(origin)?;
 			if let Some(contract) = <GetContractByID<T>>::get(&contract_id){
 				let ranges = contract.ranges;
@@ -512,8 +693,29 @@ decl_module!{
 			}
 		}
 
+		/*
+		const [ storageChallengeID, proofs ] = args
+		const storageChallenge = DB.storageChallenges[storageChallengeID - 1]
+		// attestor finished job, add them to idleAttestors again
+		const attestorID = storageChallenge.attestor
+		if (!DB.idleAttestors.includes(attestorID)) {
+		DB.idleAttestors.push(attestorID)
+		checkAttestorJobs(log)
+		}
+		// @TODO validate proof
+		const isValid = validateProof(proofs, storageChallenge)
+		let proofValidation
+		const data = [storageChallengeID]
+		log({ type: 'chain', body: [`StorageChallenge Proof for challenge: ${storageChallengeID}`] })
+		if (isValid) response = { event: { data, method: 'StorageChallengeConfirmed' } }
+		else response = { event: { data: [storageChallengeID], method: 'StorageChallengeFailed' } }
+		// emit events
+		const event = [response]
+		handlers.forEach(([name, handler]) => handler(event))
+		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_proof_of_storage(origin, challenge_id: T::ChallengeId, proofs: Vec<Proof> ){
+		fn submit_storage_challenge(origin, challenge_id: T::ChallengeId, proofs: Vec<Proof> ){
 			let user_address = ensure_signed(origin)?;
 			let mut success: bool = true;
 			if let Some(challenge) = <GetChallengeByID<T>>::get(&challenge_id){
@@ -529,24 +731,22 @@ decl_module!{
 				} else {
 					Self::deposit_event(RawEvent::ProofOfStorageFailed(challenge_id.clone()));
 				}
-			/*
-			const challenge = DB.challenges[challengeID - 1]
-		    const isValid = validateProof(proof, challenge)
-		    let proofValidation
-		    const data = [challengeID]
-		    console.log('Submitting Proof Of Storage Challenge with ID:', challengeID)
-		    if (isValid) proofValidation = { event: { data, method: 'ProofOfStorageConfirmed' } }
-		    else proofValidation = { event: { data: [challengeID], method: 'ProofOfStorageFailed' } }
-		    // emit events
-		    handlers.forEach(handler => handler([proofValidation]))
-			*/
 			} else {
 				// TODO invalid challenge
 			}
 		}
 
+		/*
+		const log = connections[name].log
+		const [ contractID ] = args
+		const performanceChallenge = { contract: contractID }
+		const performanceChallengeID = DB.performanceChallenges.push(performanceChallenge)
+		performanceChallenge.id = performanceChallengeID
+		if (DB.idleAttestors.length >= 5) emitPerformanceChallenge(performanceChallenge, log)
+		else DB.attestorJobs.push({ fnName: 'emitPerformanceChallenge', opts: performanceChallenge })
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn request_attestation(origin, contract_id: T::ContractId ){
+		fn request_performance_challenge(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			if let Some(rand_attestor) = Self::get_random_of_role(&[0], &Role::Attestor, 1).pop(){
 				let attestation_id = <GetNextAttestationID<T>>::get();
@@ -558,18 +758,26 @@ decl_module!{
 				<GetAttestationByID<T>>::insert(attestation_id, attestation.clone());
 				Self::deposit_event(RawEvent::NewAttestation(attestation_id.clone()));
 			}
-			/*
-			const [ attestorID ] = getRandom(DB.attestors)
-		    const attestation = { contract: contractID , attestor: attestorID }
-		    const attestationID = DB.attestations.push(attestation)
-		    attestation.id = attestationID
-		    const PoRChallenge = { event: { data: [attestationID], method: 'newAttestation' } }
-		    handlers.forEach(handler => handler([PoRChallenge]))
-			*/
 		}
 
+		/*
+		const [ performanceChallengeID, report ] = args
+		log({ type: 'chain', body: [`Performance Challenge proof by attestor: ${user.id} for challenge: ${performanceChallengeID}`] })
+		const performanceChallenge = DB.performanceChallenges[performanceChallengeID - 1]
+		// attestor finished job, add them to idleAttestors again
+		const attestorID = user.id
+		if (!DB.idleAttestors.includes(attestorID)) {
+			DB.idleAttestors.push(attestorID)
+			checkAttestorJobs(log)
+		}
+		// emit events
+		if (report) response = { event: { data: [performanceChallengeID], method: 'PerformanceChallengeConfirmed' } }
+		else response = { event: { data: [performanceChallengeID], method: 'PerformanceChallengeFailed' } }
+		const event = [response]
+		handlers.forEach(([name, handler]) => handler(event))
+		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_attestation_report(origin, attestation_id: T::AttestationId, reports: Vec<Report> ){
+		fn submit_performance_challenge(origin, attestation_id: T::AttestationId, reports: Vec<Report>){
 			let user_address = ensure_signed(origin)?;
 			let mut success: bool = true;
 			if let Some(attestation) = <GetAttestationByID<T>>::get(&attestation_id){
@@ -591,13 +799,6 @@ decl_module!{
 					Self::deposit_event(RawEvent::AttestationReportFailed(attestation_id.clone()));
 				}
 			}
-			/*
-			console.log('Submitting Proof Of Retrievability Attestation with ID:', attestationID)
-			// emit events
-			if (report) PoR = { event: { data: [attestationID], method: 'AttestationReportConfirmed' } }
-			else PoR = { event: { data: [attestationID], method: 'AttestationReportFailed' } }
-			handlers.forEach(handler => handler([PoR]))
-			*/
 		}
 	}
 }
