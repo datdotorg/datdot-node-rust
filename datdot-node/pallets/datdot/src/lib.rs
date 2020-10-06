@@ -75,7 +75,6 @@ use sp_arithmetic::{
 	Percent,
 	traits::{BaseArithmetic, One}
 };
-use sp_io::hashing::blake2_256;
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
 
@@ -162,15 +161,15 @@ enum Role {
 type NoiseKey = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct User<T: Trait> {
-	id: T::UserId,
-	address: T::AccountId,
+struct User<UserId, AccountId, Time> {
+	id: UserId,
+	address: AccountId,
 	attestor_key: Option<NoiseKey>,
 	encoder_key: Option<NoiseKey>,
 	hoster_key: Option<NoiseKey>,
-	attestor_form: Form<T::Moment>,
-	encoder_form: Form<T::Moment>,
-	hoster_form: Form<T::Moment>
+	attestor_form: Option<Form<Time>>,
+	encoder_form: Option<Form<Time>>,
+	hoster_form: Option<Form<Time>>
 }
 
 type FeedKey = Public;
@@ -179,7 +178,8 @@ type FeedKey = Public;
 struct Feed<T: Trait> {
 	id: T::FeedId,
 	publickey: FeedKey,
-	meta: TreeRoot
+	meta: TreeRoot,
+	publisher: T::UserId
 }
 
 type Ranges<C> = Vec<(C, C)>;
@@ -213,16 +213,16 @@ pub struct PlanUntil<Time> {
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct Plan<T: Trait> {
-	id: T::PlanId,
-	feeds: Vec<T::FeedId>,
-	from: T::Moment,
-	until: PlanUntil<T::Moment>,
+pub struct Plan<PlanId, FeedId, Time, UserId> {
+	id: PlanId,
+	feeds: Vec<FeedId>,
+	from: Time,
+	until: PlanUntil<Time>,
 	importance: u8,
 	config: Config,
-	schedules: Schedule<T::Moment>,
-	sponsor: T::UserId,
-	unhosted_feeds: Vec<T::FeedId>
+	schedules: Vec<Schedule<Time>>,
+	sponsor: UserId,
+	unhosted_feeds: Vec<FeedId>
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
@@ -420,10 +420,10 @@ decl_storage! {
 		// PUBLIC/API
 		pub GetFeedByID: map hasher(twox_64_concat) T::FeedId => Option<Feed<T>>;
 		pub GetFeedByKey: map hasher(twox_64_concat) FeedKey => Option<Feed<T>>;
-        pub GetUserByID: map hasher(twox_64_concat) T::UserId => Option<User<T>>;
+        pub GetUserByID: map hasher(twox_64_concat) T::UserId => Option<User<T::UserId, T::AccountId, T::Moment>>;
         pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Option<Contract<T>>;
         pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<Challenge<T>>;
-		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T>>;
+		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>>;
 		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::AttestationId => Option<Attestation<T>>;
 		// INTERNALLY REQUIRED STORAGE
 		pub GetNextFeedID: T::FeedId;
@@ -434,7 +434,7 @@ decl_storage! {
 		pub GetNextAttestationID: T::AttestationId;
 		pub Nonce: u64;
 		// LOOKUPS (created as neccesary)
-		pub GetIDByUser: map hasher(twox_64_concat) T::AccountId => Option<T::UserId>;
+		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::UserId, T::AccountId, T::Moment>>;
 		// ROLES ARRAY
 		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => RoleValue;
 	}
@@ -463,8 +463,6 @@ decl_module!{
 		*/
 		
 		/*
-		const log = connections[name].log
-
   		const [merkleRoot]  = args
   		const [key, {hashType, children}, signature] = merkleRoot
   		const keyBuf = Buffer.from(key, 'hex')
@@ -481,14 +479,35 @@ decl_module!{
   		const NewFeed = { event: { data: [feedID], method: 'FeedPublished' } }
   		const event = [NewFeed]
   		handlers.forEach(([name, handler]) => handler(event))
-  		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
 		*/
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn publish_feed(origin, merkle_root: (Public, TreeHashPayload, H512)){
-
+			let publisher_address = ensure_signed(origin)?;
+			let user_id = Self::user_id_from_account_id(publisher_address);
+			if let Some(feed) = <GetFeedByKey<T>>::get(merkle_root.0){
+				// if a feed is already published, emit error here.
+			} else {
+				let mut feed_id : T::FeedId;
+				let next_feed_id = <GetNextFeedID<T>>::get();
+				let new_feed = Feed::<T> {
+					id: next_feed_id.clone(),
+					publickey: merkle_root.0,
+					meta: TreeRoot {
+						signature: merkle_root.2,
+						hash_type: merkle_root.1.hash_type,
+						children: merkle_root.1.children
+					},
+					publisher: user_id
+				};
+				<GetFeedByID<T>>::insert(next_feed_id, new_feed.clone());
+				<GetFeedByKey<T>>::insert(merkle_root.0, new_feed.clone());
+				feed_id = next_feed_id.clone();
+				<GetNextFeedID<T>>::put(next_feed_id+One::one());
+				Self::deposit_event(RawEvent::NewFeed(feed_id));
+			}
 		}
 
 		/*
-		const log = connections[name].log
   		log({ type: 'chain', body: [`Publishing a plan`] })
   		const [plan] = args
   		const { feeds, from, until, importance, config, schedules } =  plan
@@ -506,10 +525,22 @@ decl_module!{
 		const NewPlan = { event: { data: [planID], method: 'NewPlan' } }
 		const event = [NewPlan]
 		handlers.forEach(([name, handler]) => handler(event))
-		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
 		*/
-		fn publish_plan(origin, plan: Plan){
-
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn publish_plan(origin, plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>){
+			let sponsor_address = ensure_signed(origin)?;
+			let user_id = Self::user_id_from_account_id(sponsor_address);
+			let next_plan_id = <GetNextPlanID<T>>::get();
+			let new_plan = Plan::<T::PlanId, T::FeedId, T::Moment, T::UserId> {
+				id: next_plan_id.clone(),
+				sponsor: user_id,
+				..plan
+			};
+			<GetPlanByID<T>>::insert(next_plan_id, new_plan.clone());
+			let plan_id = next_plan_id.clone();
+			<GetNextPlanID<T>>::put(next_plan_id+One::one());
+			Self::deposit_event(RawEvent::NewPlan(plan_id.clone()));
+			
 		}
 
 		/*
@@ -525,13 +556,11 @@ decl_module!{
 
 		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_encoder(origin, encoder_key: NoiseKey, form: Form){
+		fn register_encoder(origin, encoder_key: NoiseKey, form: Form<T::Moment>){
+
 			let user_address = ensure_signed(origin)?;
-			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-				Self::reg_user(user_address, Some(noise_key));
-				<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::Some(0));
-				Self::make_new_contract(Some(user_id.clone()), None, None);
-			}
+			let user_id = Self::user_id_from_account_id(user_address);
+			<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::Some(0));
 		}
 
 		/*
@@ -547,13 +576,10 @@ decl_module!{
 		tryContract({ log })
 		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_hoster(origin, hoster_key: NoiseKey, form: Form){
+		fn register_hoster(origin, hoster_key: NoiseKey, form: Form<T::Moment>){
 			let user_address = ensure_signed(origin)?;
-			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-				Self::reg_user(user_address, Some(noise_key));
-				<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::Some(0));
-				Self::make_new_contract(None, Some(user_id.clone()), None);
-			}
+			let user_id = Self::user_id_from_account_id(user_address);
+			<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::Some(0));
 		}
 
 		/*
@@ -568,38 +594,35 @@ decl_module!{
 		tryContract({ log })
 		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_attestor(origin, attestor_key: NoiseKey, form: Form){
+		fn register_attestor(origin, attestor_key: NoiseKey, form: Form<T::Moment>){
 			let user_address = ensure_signed(origin)?;
-			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-				<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::Some(0));
-			}
+			let user_id = Self::user_id_from_account_id(user_address);
+			<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::Some(0));
 		}
 
 		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_encoder(origin){
+			
 			let user_address = ensure_signed(origin)?;
-			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-				<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::None);
-			}
+			let user_id = Self::user_id_from_account_id(user_address);
+			<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::None);
 		}
 
 		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_hoster(origin){
 			let user_address = ensure_signed(origin)?;
-			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-				<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::None);
-			}
+			let user_id = Self::user_id_from_account_id(user_address);
+			<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::None);
 		}
 
 		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn unregister_attestor(origin){
+		fn unregister_attestor(origin){	
 			let user_address = ensure_signed(origin)?;
-			if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-				<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::None);
-			}
+			let user_id = Self::user_id_from_account_id(user_address);
+			<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::None);
 		}
 
 		/*
@@ -615,7 +638,7 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn encoding_done(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
-			// DB.contractsEncoded.push(contractID)
+			//todo
 		}
 
 		/*
@@ -638,9 +661,7 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn hosting_starts(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
-			// DB.contractsHosted.push(contractID)
-			// const HostingStarted = { event: { data: [contractID], method: 'HostingStarted' } }
-			// handlers.forEach(handler => handler([HostingStarted]))
+			//todo
 			Self::deposit_event(RawEvent::HostingStarted(contract_id));
 		}
 
@@ -678,16 +699,7 @@ decl_module!{
 				<GetChallengeByID<T>>::insert(challenge_id, challenge.clone());
 				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
 				Self::deposit_event(RawEvent::NewProofOfStorageChallenge(challenge_id.clone()));
-				/*
-				const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
-				const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
-				const challenge = { contract: contractID, chunks }
-				const challengeID = DB.challenges.push(challenge)
-				challenge.id = challengeID
-				// emit events
-				const newChallenge = { event: { data: [challengeID], method: 'NewProofOfStorageChallenge' } }
-				handlers.forEach(handler => handler([newChallenge]))
-				*/
+				//todo
 			} else {
 				//some err
 			}
@@ -755,7 +767,7 @@ decl_module!{
 					attestor: rand_attestor,
 					contract: contract_id
 				};
-				<GetAttestationByID<T>>::insert(attestation_id, attestation.clone());
+				<GetPerformanceChallengeByID<T>>::insert(attestation_id, attestation.clone());
 				Self::deposit_event(RawEvent::NewAttestation(attestation_id.clone()));
 			}
 		}
@@ -780,7 +792,7 @@ decl_module!{
 		fn submit_performance_challenge(origin, attestation_id: T::AttestationId, reports: Vec<Report>){
 			let user_address = ensure_signed(origin)?;
 			let mut success: bool = true;
-			if let Some(attestation) = <GetAttestationByID<T>>::get(&attestation_id){
+			if let Some(attestation) = <GetPerformanceChallengeByID<T>>::get(&attestation_id){
 				for report in reports {
 					match report.latency {
 						Some(_) => {
@@ -808,80 +820,22 @@ decl_module!{
 ******************************************************************************/
 impl<T: Trait> Module<T> {
 
-	fn reg_user(user_address: T::AccountId, noise_key: Option<NoiseKey>){
-		if let Some(user_id) = <GetIDByUser<T>>::get(&user_address){
-			if let Some(user) = <GetUserByID<T>>::get(&user_id){
-				<GetUserByID<T>>::insert(user_id, User::<T> {
-					noise_key: noise_key,
-					..user
-				});
+	fn user_id_from_account_id(account_id: T::AccountId) -> T::UserId {
+			if let Some(user) = <GetUserByKey<T>>::get(&account_id){
+				// ... noop
+				user.id
 			} else {
-				// some err
-			}
-		} else {
-			let mut x = <GetNextUserID<T>>::get();
-				let new_user = User {
-					id: x.clone(),
-					address: user_address.clone(),
-					noise_key: noise_key
+				let mut user_id = <GetNextUserID<T>>::get();
+				let new_user = User::<T::UserId, T::AccountId, T::Moment> {
+					id: user_id.clone(),
+					address: account_id.clone(),
+					..User::<T::UserId, T::AccountId, T::Moment>::default()
 				};
-				<GetUserByID<T>>::insert(x, new_user.clone());
-				<GetIDByUser<T>>::insert(&user_address, x.clone());
-			<GetNextUserID<T>>::put(x+One::one());
-		}
-	}
-
-	fn make_new_contract(
-		encoder_option: Option<T::UserId>,
-		hoster_option: Option<T::UserId>,
-		plan_option: Option<T::PlanId>
-	){
-		let mut contract_id : T::ContractId;
-		let mut random_hoster_option = None;
-		let mut random_encoder_option = None;
-		let mut random_plan_option = None;
-		match (encoder_option, hoster_option, plan_option) {
-			(Some(encoder_id), Some(hoster_id), Some(plan_id)) => {
-				let x = <GetNextContractID<T>>::get();
-					if let Some(plan) = <GetPlanByID<T>>::get(plan_id){
-						let new_contract = Contract::<T> {
-							id: x.clone(),
-							plan: plan_id,
-							ranges: plan.ranges,
-							encoder: encoder_id,
-							hoster: hoster_id
-						};
-						contract_id = x.clone();
-						<GetContractByID<T>>::insert(x, new_contract.clone());
-						<GetNextContractID<T>>::put(x+One::one());
-						Self::deposit_event(RawEvent::NewContract(contract_id.clone()));
-					};
-			},
-			(None, None, Some(plan_id)) => {  // Condition: if planID && encoders available & hosters available
-				random_hoster_option = Self::get_random_of_role(&[], &Role::Hoster, 1).pop();
-				random_encoder_option = Self::get_random_of_role(&[], &Role::Encoder, 1).pop();
-				if random_encoder_option.is_some() && random_hoster_option.is_some(){
-					Self::make_new_contract(random_encoder_option, random_hoster_option, plan_option);
-				}
-			},
-			(None, Some(hoster_id), None) => { //Condition: if hosterID && encoders available & plans available
-				random_encoder_option = Self::get_random_of_role(&[], &Role::Encoder, 1).pop();
-				let plans : Vec<T::PlanId> = <GetPlanByID<T>>::iter().map(|x|x.0).collect();
-				random_plan_option = Self::get_random_of_vec(&[], plans, 1).pop();
-				if random_encoder_option.is_some() && random_plan_option.is_some(){
-					Self::make_new_contract(random_encoder_option, hoster_option, random_plan_option);
-				}
-			},
-			(Some(encoder_id), None, None) => { //Condition: if encoderID && hosters available & plans available
-				random_hoster_option = Self::get_random_of_role(&[], &Role::Hoster, 1).pop();
-				let plans : Vec<T::PlanId> = <GetPlanByID<T>>::iter().map(|x|x.0).collect();
-				random_plan_option = Self::get_random_of_vec(&[], plans, 1).pop();
-				if random_hoster_option.is_some() && random_plan_option.is_some(){
-					Self::make_new_contract(encoder_option, random_hoster_option, random_plan_option);
-				}
-			},
-			(_, _, _) => ()
-		}
+				<GetUserByID<T>>::insert(user_id, new_user.clone());
+				<GetUserByKey<T>>::insert(&account_id, new_user.clone());
+				<GetNextUserID<T>>::put(user_id+One::one());
+				user_id
+			}
 	}
 
 	fn random_from_ranges(ranges: Ranges<ChunkIndex>) -> Vec<ChunkIndex>{
