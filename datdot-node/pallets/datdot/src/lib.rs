@@ -139,7 +139,7 @@ decl_event!(
 		ProofOfStorageConfirmed(ChallengeId),
 		/// Proof-of-storage not confirmed
 		ProofOfStorageFailed(ChallengeId),
-		/// Attestation of retrievability requested
+		/// PerformanceChallenge of retrievability requested
 		NewAttestation(AttestationId),
 		/// Proof of retrievability confirmed
 		AttestationReportConfirmed(AttestationId),
@@ -154,8 +154,11 @@ type ChunkIndex = u64;
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 enum Role {
 	Encoder,
+	IdleEncoder,
 	Hoster,
-	Attestor
+	IdleHoster,
+	Attestor,
+	IdleAttestor
 }
 
 type NoiseKey = Public;
@@ -230,15 +233,18 @@ struct Contract<T: Trait> {
 	id: T::ContractId,
 	plan: T::PlanId,
 	ranges: Ranges<ChunkIndex>,
-	encoder: T::UserId,
-	hoster: T::UserId
+	encoders: Vec<T::UserId>,
+	hosters: Vec<T::UserId>,
+	attestor: T::UserId
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct Challenge<T: Trait> {
+struct StorageChallenge<T: Trait> {
 	id: T::ChallengeId,
 	contract: T::ContractId,
-	chunks: Vec<ChunkIndex>
+	hoster: T::UserId,
+	chunks: Vec<ChunkIndex>,
+	attestor: Option<T::UserId>
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -356,7 +362,7 @@ impl Node {
 pub type Proof = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct Attestation<T: Trait> {
+struct PerformanceChallenge<T: Trait> {
 	id: T::AttestationId,
 	attestor: T::UserId,
 	contract: T::ContractId
@@ -401,6 +407,13 @@ pub struct Form<Time> {
 	config: Config,
 }
 
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub enum AttestorJob<ChallengeId> {
+	StorageChallenge(ChallengeId),
+	PerformanceChallenge(ChallengeId)
+}
+
 /******************************************************************************
   Storage items/db
 ******************************************************************************/
@@ -422,9 +435,9 @@ decl_storage! {
 		pub GetFeedByKey: map hasher(twox_64_concat) FeedKey => Option<Feed<T>>;
         pub GetUserByID: map hasher(twox_64_concat) T::UserId => Option<User<T::UserId, T::AccountId, T::Moment>>;
         pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Option<Contract<T>>;
-        pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<Challenge<T>>;
+        pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<StorageChallenge<T>>;
 		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>>;
-		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::AttestationId => Option<Attestation<T>>;
+		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::AttestationId => Option<PerformanceChallenge<T>>;
 		// INTERNALLY REQUIRED STORAGE
 		pub GetNextFeedID: T::FeedId;
 		pub GetNextUserID: T::UserId;
@@ -433,10 +446,11 @@ decl_storage! {
 		pub GetNextPlanID: T::PlanId;
 		pub GetNextAttestationID: T::AttestationId;
 		pub Nonce: u64;
+		pub GetAttestorJobQueue: Vec<AttestorJob<T::ChallengeId>>;
 		// LOOKUPS (created as neccesary)
 		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::UserId, T::AccountId, T::Moment>>;
 		// ROLES ARRAY
-		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => RoleValue;
+		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => bool;
 	}
 }
 
@@ -483,7 +497,7 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn publish_feed(origin, merkle_root: (Public, TreeHashPayload, H512)){
 			let publisher_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(publisher_address);
+			let user = Self::load_user(publisher_address);
 			if let Some(feed) = <GetFeedByKey<T>>::get(merkle_root.0){
 				// if a feed is already published, emit error here.
 			} else {
@@ -497,7 +511,7 @@ decl_module!{
 						hash_type: merkle_root.1.hash_type,
 						children: merkle_root.1.children
 					},
-					publisher: user_id
+					publisher: user.id
 				};
 				<GetFeedByID<T>>::insert(next_feed_id, new_feed.clone());
 				<GetFeedByKey<T>>::insert(merkle_root.0, new_feed.clone());
@@ -529,11 +543,11 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn publish_plan(origin, plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>){
 			let sponsor_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(sponsor_address);
+			let user = Self::load_user(sponsor_address);
 			let next_plan_id = <GetNextPlanID<T>>::get();
 			let new_plan = Plan::<T::PlanId, T::FeedId, T::Moment, T::UserId> {
 				id: next_plan_id.clone(),
-				sponsor: user_id,
+				sponsor: user.id,
 				..plan
 			};
 			<GetPlanByID<T>>::insert(next_plan_id, new_plan.clone());
@@ -559,8 +573,12 @@ decl_module!{
 		fn register_encoder(origin, encoder_key: NoiseKey, form: Form<T::Moment>){
 
 			let user_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(user_address);
-			<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::Some(0));
+			let mut user = Self::load_user(user_address);
+			user.encoder_form = Some(form);
+			user.encoder_key = Some(encoder_key);
+			Self::save_user(&mut user);
+			<Roles<T>>::insert(Role::Encoder, user.id, true);
+			<Roles<T>>::insert(Role::IdleEncoder, user.id, true);
 		}
 
 		/*
@@ -578,8 +596,12 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_hoster(origin, hoster_key: NoiseKey, form: Form<T::Moment>){
 			let user_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(user_address);
-			<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::Some(0));
+			let mut user = Self::load_user(user_address);
+			user.hoster_form = Some(form);
+			user.hoster_key = Some(hoster_key);
+			Self::save_user(&mut user);
+			<Roles<T>>::insert(Role::Hoster, user.id, true);
+			<Roles<T>>::insert(Role::IdleHoster, user.id, true);
 		}
 
 		/*
@@ -596,8 +618,13 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn register_attestor(origin, attestor_key: NoiseKey, form: Form<T::Moment>){
 			let user_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(user_address);
-			<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::Some(0));
+			let mut user = Self::load_user(user_address);
+			user.attestor_form = Some(form);
+			user.attestor_key = Some(attestor_key);
+			Self::save_user(&mut user);
+			<Roles<T>>::insert(Role::Attestor, user.id, true);
+			<Roles<T>>::insert(Role::IdleAttestor, user.id, true);
+			//TODO "attestor jobs"
 		}
 
 		// Ensure that these match new logic TODO
@@ -605,24 +632,37 @@ decl_module!{
 		fn unregister_encoder(origin){
 			
 			let user_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(user_address);
-			<Roles<T>>::insert(Role::Encoder, user_id, RoleValue::None);
+			let mut user = Self::load_user(user_address);
+			user.encoder_form = None;
+			user.encoder_key = None;
+			Self::save_user(&mut user);
+			<Roles<T>>::insert(Role::Encoder, user.id, false);
+			<Roles<T>>::insert(Role::IdleEncoder, user.id, false);
 		}
 
 		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_hoster(origin){
 			let user_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(user_address);
-			<Roles<T>>::insert(Role::Hoster, user_id, RoleValue::None);
+			let mut user = Self::load_user(user_address);
+			user.hoster_form = None;
+			user.hoster_key = None;
+			Self::save_user(&mut user);
+			<Roles<T>>::insert(Role::Hoster, user.id, false);
+			<Roles<T>>::insert(Role::IdleHoster, user.id, false);
+
 		}
 
 		// Ensure that these match new logic TODO
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn unregister_attestor(origin){	
 			let user_address = ensure_signed(origin)?;
-			let user_id = Self::user_id_from_account_id(user_address);
-			<Roles<T>>::insert(Role::Attestor, user_id, RoleValue::None);
+			let mut user = Self::load_user(user_address);
+			user.attestor_form = None;
+			user.attestor_key = None;
+			Self::save_user(&mut user);
+			<Roles<T>>::insert(Role::Attestor, user.id, false);
+			<Roles<T>>::insert(Role::IdleAttestor, user.id, false);
 		}
 
 		/*
@@ -638,7 +678,12 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn encoding_done(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
-			//todo
+			let user = Self::load_user(user_address);
+			if let Some(contract) = <GetContractByID<T>>::get(contract_id){
+				ensure!(user.id == contract.encoder, "TODO permission error");
+			};
+			//todo should be economic logic, still under consideration.
+			//todo make encoders idle
 		}
 
 		/*
@@ -661,7 +706,12 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn hosting_starts(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
-			//todo
+			let user = Self::load_user(user_address);
+			if let Some(contract) = <GetContractByID<T>>::get(contract_id){
+				ensure!(user.id == contract.hoster, "TODO permission error");
+			};
+			//todo should be economic logic, still under consideration.
+			//todo make attestor idle
 			Self::deposit_event(RawEvent::HostingStarted(contract_id));
 		}
 
@@ -681,23 +731,28 @@ decl_module!{
 		const challenge = { event: { data: [storageChallengeID], method: 'NewStorageChallenge' } }
 		const event = [challenge]
 		handlers.forEach(([name, handler]) => handler(event))
-		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
 
 		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn request_storage_challenge(origin, contract_id: T::ContractId, hoster_id: T::UserId ){
 			let user_address = ensure_signed(origin)?;
 			if let Some(contract) = <GetContractByID<T>>::get(&contract_id){
+				let sponsor = <GetPlanByID<T>>::get(contract.plan).ok_or("TODO no plan")?.sponsor;
+				ensure!(sponsor == hoster_id, "TODO invalid challenge request");
+				ensure!(contract.hoster == hoster_id, "TODO invalid challenge request");
 				let ranges = contract.ranges;
 				let random_chunks = Self::random_from_ranges(ranges);
 				let challenge_id = <GetNextChallengeID<T>>::get();
-				let challenge = Challenge::<T> {
+				let challenge = StorageChallenge::<T> {
 					id: challenge_id.clone(),
 					contract: contract_id,
-					chunks: random_chunks
+					hoster: hoster_id,
+					chunks: random_chunks,
+					attestor: None
 				};
 				<GetChallengeByID<T>>::insert(challenge_id, challenge.clone());
 				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
+				Self::assign_and_emit_attestors(1, );
 				Self::deposit_event(RawEvent::NewProofOfStorageChallenge(challenge_id.clone()));
 				//todo
 			} else {
@@ -762,7 +817,7 @@ decl_module!{
 			let user_address = ensure_signed(origin)?;
 			if let Some(rand_attestor) = Self::get_random_of_role(&[0], &Role::Attestor, 1).pop(){
 				let attestation_id = <GetNextAttestationID<T>>::get();
-				let attestation = Attestation::<T> {
+				let attestation = PerformanceChallenge::<T> {
 					id: attestation_id.clone(),
 					attestor: rand_attestor,
 					contract: contract_id
@@ -774,7 +829,6 @@ decl_module!{
 
 		/*
 		const [ performanceChallengeID, report ] = args
-		log({ type: 'chain', body: [`Performance Challenge proof by attestor: ${user.id} for challenge: ${performanceChallengeID}`] })
 		const performanceChallenge = DB.performanceChallenges[performanceChallengeID - 1]
 		// attestor finished job, add them to idleAttestors again
 		const attestorID = user.id
@@ -820,22 +874,29 @@ decl_module!{
 ******************************************************************************/
 impl<T: Trait> Module<T> {
 
-	fn user_id_from_account_id(account_id: T::AccountId) -> T::UserId {
+	fn load_user(account_id: T::AccountId) -> User<T::UserId, T::AccountId, T::Moment> {
 			if let Some(user) = <GetUserByKey<T>>::get(&account_id){
-				// ... noop
-				user.id
+				user
 			} else {
 				let mut user_id = <GetNextUserID<T>>::get();
-				let new_user = User::<T::UserId, T::AccountId, T::Moment> {
+				let mut new_user = User::<T::UserId, T::AccountId, T::Moment> {
 					id: user_id.clone(),
 					address: account_id.clone(),
 					..User::<T::UserId, T::AccountId, T::Moment>::default()
 				};
-				<GetUserByID<T>>::insert(user_id, new_user.clone());
-				<GetUserByKey<T>>::insert(&account_id, new_user.clone());
+				Self::save_user(&mut new_user);
 				<GetNextUserID<T>>::put(user_id+One::one());
-				user_id
+				new_user
 			}
+	}
+
+	fn save_user(user: &mut User<T::UserId, T::AccountId, T::Moment>){
+		<GetUserByID<T>>::insert(user.id, user.clone());
+		<GetUserByKey<T>>::insert(user.clone().address, user.clone());
+	}
+
+	fn get_attestor(not_hoster: T::UserId) -> T::UserId {
+		not_hoster //TODO select from attestors, DON'T select not_hoster
 	}
 
 	fn random_from_ranges(ranges: Ranges<ChunkIndex>) -> Vec<ChunkIndex>{
@@ -844,7 +905,7 @@ impl<T: Trait> Module<T> {
 		ranges.iter().map(|x|x.0).collect()
 	}
 
-	fn validate_proof(proof: Proof, challenge: Challenge<T>) -> bool {
+	fn validate_proof(proof: Proof, challenge: StorageChallenge<T>) -> bool {
 		//TODO validate proof!
 		true
 	}
@@ -892,7 +953,7 @@ impl<T: Trait> Module<T> {
 
 	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<T::UserId> {
 		let members : Vec<T::UserId> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
-			if x.1.is_some(){
+			if x.1{
 				Some(x.0)
 			} else {
 				None
@@ -900,19 +961,4 @@ impl<T: Trait> Module<T> {
 		}).collect();
 		Self::get_random_of_vec(influence, members, count)
 	}
-
-
-	fn get_random_of_role_filtered<F>(influence: &[u8], role: &Role, count: u32, filter: F) -> Vec<T::UserId>
-	where F: Fn(RoleValue) -> bool {
-		let members : Vec<T::UserId> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
-			if filter(x.1){
-				Some(x.0)
-			} else {
-				None
-			}
-		}).collect();
-		Self::get_random_of_vec(influence, members, count)
-	}
-
-
 }
