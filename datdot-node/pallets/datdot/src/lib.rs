@@ -7,6 +7,8 @@
 use sp_std::prelude::*;
 use sp_std::fmt::Debug;
 use sp_std::collections::btree_map::BTreeMap;
+use sp_std::iter::ExactSizeIterator;
+use sp_std::iter::Take;
 use frame_support::{
 	decl_module,
 	decl_storage,
@@ -107,9 +109,12 @@ pub trait Trait: system::Trait{
 	MaybeSerializeDeserialize + Debug;
 	type PlanId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
-	type AttestationId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
+	type PerformanceChallengeId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
 	MaybeSerializeDeserialize + Debug;
 	// ---
+
+	//CONSTS
+	type PerformanceAttestorCount: Get<u8>;
 }
 
 
@@ -122,7 +127,7 @@ decl_event!(
 	<T as Trait>::ContractId,
 	<T as Trait>::PlanId,
 	<T as Trait>::ChallengeId,
-	<T as Trait>::AttestationId
+	<T as Trait>::PerformanceChallengeId
 	{
 		/// New data feed registered
 		NewFeed(FeedId),
@@ -134,17 +139,17 @@ decl_event!(
 		/// Hosting contract started
 		HostingStarted(ContractId),
 		/// New proof-of-storage challenge
-		NewProofOfStorageChallenge(ChallengeId),
+		NewStorageChallenge(ChallengeId),
 		/// Proof-of-storage confirmed
 		ProofOfStorageConfirmed(ChallengeId),
 		/// Proof-of-storage not confirmed
 		ProofOfStorageFailed(ChallengeId),
 		/// PerformanceChallenge of retrievability requested
-		NewAttestation(AttestationId),
+		NewPerformanceChallenge(PerformanceChallengeId),
 		/// Proof of retrievability confirmed
-		AttestationReportConfirmed(AttestationId),
+		AttestationReportConfirmed(PerformanceChallengeId),
 		/// Data serving not verified
-		AttestationReportFailed(AttestationId),
+		AttestationReportFailed(PerformanceChallengeId),
 	}
 );
 
@@ -228,6 +233,10 @@ pub struct Plan<PlanId, FeedId, Time, UserId> {
 	unhosted_feeds: Vec<FeedId>
 }
 
+struct Expirable<Item, Time> {
+	inner: Item,
+	expires: Time
+}
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Contract<T: Trait> {
 	id: T::ContractId,
@@ -235,6 +244,7 @@ struct Contract<T: Trait> {
 	ranges: Ranges<ChunkIndex>,
 	encoders: Vec<T::UserId>,
 	hosters: Vec<T::UserId>,
+	active: Vec<T::UserId>,
 	attestor: T::UserId
 }
 
@@ -363,8 +373,8 @@ pub type Proof = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct PerformanceChallenge<T: Trait> {
-	id: T::AttestationId,
-	attestor: T::UserId,
+	id: T::PerformanceChallengeId,
+	attestors: Option<Vec<T::UserId>>,
 	contract: T::ContractId
 }
 
@@ -407,11 +417,11 @@ pub struct Form<Time> {
 	config: Config,
 }
 
-
+// (number of attestors required, job id)
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-pub enum AttestorJob<ChallengeId> {
+pub enum AttestorJob<ChallengeId, PerformanceChallengeId> {
 	StorageChallenge(ChallengeId),
-	PerformanceChallenge(ChallengeId)
+	PerformanceChallenge(PerformanceChallengeId)
 }
 
 /******************************************************************************
@@ -437,16 +447,16 @@ decl_storage! {
         pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Option<Contract<T>>;
         pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<StorageChallenge<T>>;
 		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>>;
-		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::AttestationId => Option<PerformanceChallenge<T>>;
+		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::PerformanceChallengeId => Option<PerformanceChallenge<T>>;
 		// INTERNALLY REQUIRED STORAGE
 		pub GetNextFeedID: T::FeedId;
 		pub GetNextUserID: T::UserId;
 		pub GetNextContractID: T::ContractId;
 		pub GetNextChallengeID: T::ChallengeId;
 		pub GetNextPlanID: T::PlanId;
-		pub GetNextAttestationID: T::AttestationId;
+		pub GetNextAttestationID: T::PerformanceChallengeId;
 		pub Nonce: u64;
-		pub GetAttestorJobQueue: Vec<AttestorJob<T::ChallengeId>>;
+		pub GetAttestorJobQueue: Vec<AttestorJob<T::ChallengeId, T::PerformanceChallengeId>>;
 		// LOOKUPS (created as neccesary)
 		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::UserId, T::AccountId, T::Moment>>;
 		// ROLES ARRAY
@@ -501,7 +511,7 @@ decl_module!{
 			if let Some(feed) = <GetFeedByKey<T>>::get(merkle_root.0){
 				// if a feed is already published, emit error here.
 			} else {
-				let mut feed_id : T::FeedId;
+				let feed_id : T::FeedId;
 				let next_feed_id = <GetNextFeedID<T>>::get();
 				let new_feed = Feed::<T> {
 					id: next_feed_id.clone(),
@@ -623,8 +633,7 @@ decl_module!{
 			user.attestor_key = Some(attestor_key);
 			Self::save_user(&mut user);
 			<Roles<T>>::insert(Role::Attestor, user.id, true);
-			<Roles<T>>::insert(Role::IdleAttestor, user.id, true);
-			//TODO "attestor jobs"
+			Self::give_attestors_jobs(&mut [user.id], &mut []);
 		}
 
 		// Ensure that these match new logic TODO
@@ -636,8 +645,8 @@ decl_module!{
 			user.encoder_form = None;
 			user.encoder_key = None;
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Encoder, user.id, false);
-			<Roles<T>>::insert(Role::IdleEncoder, user.id, false);
+			<Roles<T>>::remove(Role::Encoder, user.id);
+			<Roles<T>>::remove(Role::IdleEncoder, user.id);
 		}
 
 		// Ensure that these match new logic TODO
@@ -648,8 +657,8 @@ decl_module!{
 			user.hoster_form = None;
 			user.hoster_key = None;
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Hoster, user.id, false);
-			<Roles<T>>::insert(Role::IdleHoster, user.id, false);
+			<Roles<T>>::remove(Role::Hoster, user.id);
+			<Roles<T>>::remove(Role::IdleHoster, user.id);
 
 		}
 
@@ -661,29 +670,8 @@ decl_module!{
 			user.attestor_form = None;
 			user.attestor_key = None;
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Attestor, user.id, false);
-			<Roles<T>>::insert(Role::IdleAttestor, user.id, false);
-		}
-
-		/*
-		const [ contractID ] = args
-		DB.contractsEncoded.push(contractID)
-		const contract = DB.contracts[contractID - 1]
-		const encoderIDs = contract.encoders
-		encoderIDs.forEach(encoderID => {
-			 if (!DB.idleEncoders.includes(encoderID))
-			  DB.idleEncoders.push(encoderID) 
-			})	
-		*/
-		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn encoding_done(origin, contract_id: T::ContractId ){
-			let user_address = ensure_signed(origin)?;
-			let user = Self::load_user(user_address);
-			if let Some(contract) = <GetContractByID<T>>::get(contract_id){
-				ensure!(user.id == contract.encoder, "TODO permission error");
-			};
-			//todo should be economic logic, still under consideration.
-			//todo make encoders idle
+			<Roles<T>>::remove(Role::Attestor, user.id);
+			<Roles<T>>::remove(Role::IdleAttestor, user.id);
 		}
 
 		/*
@@ -707,12 +695,20 @@ decl_module!{
 		fn hosting_starts(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
-			if let Some(contract) = <GetContractByID<T>>::get(contract_id){
-				ensure!(user.id == contract.hoster, "TODO permission error");
+			if let Some(mut contract) = <GetContractByID<T>>::get(contract_id){
+				ensure!(contract.hosters.contains(&user.id), "TODO permission error");
+				if !contract.active.contains(&user.id) {
+					contract.active.push(user.id);
+				} else if contract.active.len() == contract.hosters.len() {
+					for current_encoder in contract.clone().encoders {
+						<Roles<T>>::insert(Role::IdleEncoder, current_encoder.clone(), true);
+					}
+				}
+				<GetContractByID<T>>::insert(contract_id, contract.clone());
+				Self::give_attestors_jobs(&[contract.attestor], &mut []);
+				Self::deposit_event(RawEvent::HostingStarted(contract_id));
 			};
 			//todo should be economic logic, still under consideration.
-			//todo make attestor idle
-			Self::deposit_event(RawEvent::HostingStarted(contract_id));
 		}
 
 		/*
@@ -736,10 +732,10 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn request_storage_challenge(origin, contract_id: T::ContractId, hoster_id: T::UserId ){
 			let user_address = ensure_signed(origin)?;
+			let user = Self::load_user(user_address);
 			if let Some(contract) = <GetContractByID<T>>::get(&contract_id){
 				let sponsor = <GetPlanByID<T>>::get(contract.plan).ok_or("TODO no plan")?.sponsor;
-				ensure!(sponsor == hoster_id, "TODO invalid challenge request");
-				ensure!(contract.hoster == hoster_id, "TODO invalid challenge request");
+				ensure!(sponsor == user.id, "TODO invalid challenge request");
 				let ranges = contract.ranges;
 				let random_chunks = Self::random_from_ranges(ranges);
 				let challenge_id = <GetNextChallengeID<T>>::get();
@@ -752,9 +748,7 @@ decl_module!{
 				};
 				<GetChallengeByID<T>>::insert(challenge_id, challenge.clone());
 				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
-				Self::assign_and_emit_attestors(1, );
-				Self::deposit_event(RawEvent::NewProofOfStorageChallenge(challenge_id.clone()));
-				//todo
+				Self::give_attestors_jobs(&[], &mut [AttestorJob::StorageChallenge(challenge_id.clone())]);
 			} else {
 				//some err
 			}
@@ -815,16 +809,14 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn request_performance_challenge(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
-			if let Some(rand_attestor) = Self::get_random_of_role(&[0], &Role::Attestor, 1).pop(){
-				let attestation_id = <GetNextAttestationID<T>>::get();
-				let attestation = PerformanceChallenge::<T> {
-					id: attestation_id.clone(),
-					attestor: rand_attestor,
-					contract: contract_id
-				};
-				<GetPerformanceChallengeByID<T>>::insert(attestation_id, attestation.clone());
-				Self::deposit_event(RawEvent::NewAttestation(attestation_id.clone()));
-			}
+			let attestation_id = <GetNextAttestationID<T>>::get();
+			let attestation = PerformanceChallenge::<T> {
+				id: attestation_id.clone(),
+				attestors: None,
+				contract: contract_id
+			};
+			<GetPerformanceChallengeByID<T>>::insert(attestation_id, attestation.clone());
+			Self::give_attestors_jobs(&mut [], &mut [AttestorJob::PerformanceChallenge(attestation_id)]);
 		}
 
 		/*
@@ -843,7 +835,7 @@ decl_module!{
 		handlers.forEach(([name, handler]) => handler(event))
 		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_performance_challenge(origin, attestation_id: T::AttestationId, reports: Vec<Report>){
+		fn submit_performance_challenge(origin, attestation_id: T::PerformanceChallengeId, reports: Vec<Report>){
 			let user_address = ensure_signed(origin)?;
 			let mut success: bool = true;
 			if let Some(attestation) = <GetPerformanceChallengeByID<T>>::get(&attestation_id){
@@ -895,8 +887,45 @@ impl<T: Trait> Module<T> {
 		<GetUserByKey<T>>::insert(user.clone().address, user.clone());
 	}
 
-	fn get_attestor(not_hoster: T::UserId) -> T::UserId {
-		not_hoster //TODO select from attestors, DON'T select not_hoster
+	fn give_attestors_jobs(
+		attestors: &[T::UserId],
+		jobs: &mut [AttestorJob<T::ChallengeId, T::PerformanceChallengeId>]
+	){
+		for attestor in attestors {
+			<Roles<T>>::insert(Role::IdleAttestor, attestor, true);
+		}
+		let mut old_job_queue = <GetAttestorJobQueue<T>>::get();
+		let mut job_queue_slice = [jobs, old_job_queue.as_mut_slice()].concat();
+		let job_queue = job_queue_slice.iter();
+		for job in job_queue.clone() {
+			match job {
+				AttestorJob::PerformanceChallenge(challenge_id) => {
+					// Verify we have a sufficient number of attestors for this challenge type
+					let mut attestor_count = 0;
+					let mut performance_attestors : Vec<T::UserId> = Vec::new();
+						// emit an attestation request for each performance attestor
+					for attestor in <Roles<T>>::iter_prefix(Role::IdleAttestor) {
+						attestor_count += 1;
+						performance_attestors.push(attestor.0);
+						if attestor_count > T::PerformanceAttestorCount::get().into(){
+							<Roles<T>>::remove(Role::IdleAttestor, attestor.0);
+							if let Some(mut challenge) = <GetPerformanceChallengeByID<T>>::get(&challenge_id){
+								challenge.attestors = Some(performance_attestors);
+								<GetPerformanceChallengeByID<T>>::insert(&challenge_id, challenge);
+							}
+							Self::deposit_event(RawEvent::NewPerformanceChallenge(challenge_id.clone()));
+							break;
+						}
+					}
+				},
+				AttestorJob::StorageChallenge(challenge_id) => {
+
+				}
+			}
+		}
+		<GetAttestorJobQueue<T>>::put(
+			job_queue.collect::<Vec<&AttestorJob<T::ChallengeId, T::PerformanceChallengeId>>>()
+		);
 	}
 
 	fn random_from_ranges(ranges: Ranges<ChunkIndex>) -> Vec<ChunkIndex>{
