@@ -28,7 +28,10 @@ use frame_support::{
 		EnsureOrigin,
 		Get,
 		Randomness,
-		schedule::Named as ScheduleNamed,
+		schedule::{
+			Named as ScheduleNamed,
+			DispatchTime
+		},
 		LockableCurrency
 	},
 	weights::{
@@ -85,12 +88,16 @@ use ed25519::{Public, Signature};
 ******************************************************************************/
 pub trait Trait: system::Trait{
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+	
+	/// The Scheduler.
+
+	type Proposal: Parameter + Dispatchable<Origin=Self::Origin> + From<Call<Self>>;
+	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal, RawOrigin<Self::AccountId>>;
 
 	/// Type used for expressing timestamp.
 	type Moment: Parameter + Default + AtLeast32Bit
 		+ Scale<Self::BlockNumber, Output = Self::Moment> + Copy;
 
-	
 	/// The currency trait.
 	type Currency: LockableCurrency<Self::AccountId>;
 
@@ -115,6 +122,7 @@ pub trait Trait: system::Trait{
 
 	//CONSTS
 	type PerformanceAttestorCount: Get<u8>;
+	type ChallengeDelay: Get<<Self as system::Trait>::BlockNumber>;
 }
 
 
@@ -424,6 +432,12 @@ pub enum AttestorJob<ChallengeId, PerformanceChallengeId> {
 	PerformanceChallenge(PerformanceChallengeId)
 }
 
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub enum ChallengeType {
+	StorageChallenge,
+	PerformanceChallenge
+}
+
 /******************************************************************************
   Storage items/db
 ******************************************************************************/
@@ -471,6 +485,9 @@ decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event() = default;
 
+
+		const ChallengeDelay : <T as system::Trait>::BlockNumber = T::ChallengeDelay::get();
+		const PerformanceAttestorCount : u8 = T::PerformanceAttestorCount::get();
 		/*
 		if (type === 'publishFeed') _publishFeed(user, { name, nonce }, status, args)
 		else if (type === 'publishPlan') _publishPlan(user, { name, nonce }, status, args)
@@ -706,6 +723,7 @@ decl_module!{
 				}
 				<GetContractByID<T>>::insert(contract_id, contract.clone());
 				Self::give_attestors_jobs(&[contract.attestor], &mut []);
+				Self::start_challenges(contract_id, user.id);
 				Self::deposit_event(RawEvent::HostingStarted(contract_id));
 			};
 			//todo should be economic logic, still under consideration.
@@ -750,7 +768,7 @@ decl_module!{
 				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
 				Self::give_attestors_jobs(&[], &mut [AttestorJob::StorageChallenge(challenge_id.clone())]);
 			} else {
-				//some err
+				fail!("TODO contract missing error");
 			}
 		}
 
@@ -778,8 +796,10 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn submit_storage_challenge(origin, challenge_id: T::ChallengeId, proofs: Vec<Proof> ){
 			let user_address = ensure_signed(origin)?;
+			let user = Self::load_user(user_address);
 			let mut success: bool = true;
 			if let Some(challenge) = <GetChallengeByID<T>>::get(&challenge_id){
+				ensure!(user.id == challenge.hoster, "TODO permission error");
 				for proof in proofs {
 					if Self::validate_proof(proof.clone(), challenge.clone()){
 						success = success && true;
@@ -793,7 +813,7 @@ decl_module!{
 					Self::deposit_event(RawEvent::ProofOfStorageFailed(challenge_id.clone()));
 				}
 			} else {
-				// TODO invalid challenge
+				fail!("TODO challenge missing error");
 			}
 		}
 
@@ -809,6 +829,8 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn request_performance_challenge(origin, contract_id: T::ContractId ){
 			let user_address = ensure_signed(origin)?;
+			let user = Self::load_user(user_address);
+			//TODO ensure user is sponsor 
 			let attestation_id = <GetNextAttestationID<T>>::get();
 			let attestation = PerformanceChallenge::<T> {
 				id: attestation_id.clone(),
@@ -866,6 +888,62 @@ decl_module!{
 ******************************************************************************/
 impl<T: Trait> Module<T> {
 
+	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){
+		if let Some(contract) = <GetContractByID<T>>::get(contract_id){
+			if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
+				if let Some(sponsor) = <GetUserByID<T>>::get(&plan.sponsor){
+					let sponsor_origin = RawOrigin::Signed(sponsor.address);
+					Self::schedule_challenges(
+						contract_id,
+						Some(hoster_id),
+						plan,
+						sponsor_origin,
+						&[ChallengeType::StorageChallenge,ChallengeType::PerformanceChallenge]
+					);
+				}
+			}
+		}
+	}
+
+	fn schedule_challenges(
+		contract_id: T::ContractId,
+		hoster_id: Option<T::UserId>,
+		plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>,
+		sponsor_origin: RawOrigin<T::AccountId>,
+		challenge_types: &[ChallengeType]
+	){
+		// if plan.until.time > time now, do logic below
+		for challenge_type in challenge_types {
+			let challenge_call: Call<T> = match challenge_type {
+				ChallengeType::StorageChallenge => {
+					Call::request_storage_challenge(contract_id, hoster_id.unwrap())
+				},
+				ChallengeType::PerformanceChallenge => {
+					Call::request_performance_challenge(contract_id)
+				}
+			};
+			//schedule based on defaults
+			// challenge request types: 0 = storage, 1 = performance
+			let challenge_delay: <T as system::Trait>::BlockNumber = T::ChallengeDelay::get();
+			if plan.schedules.len() == 0 {
+				(contract_id, hoster_id, challenge_type).using_encoded(
+					|id_bytes|{
+						T::Scheduler::schedule_named(
+							id_bytes.to_vec(),
+							DispatchTime::After(challenge_delay),
+							None,
+							254,
+							sponsor_origin.clone(),
+							challenge_call.into()
+						);
+					}
+				)
+			} else {
+				//schedule based on plan_schedules
+			}
+		}
+	}
+
 	fn load_user(account_id: T::AccountId) -> User<T::UserId, T::AccountId, T::Moment> {
 			if let Some(user) = <GetUserByKey<T>>::get(&account_id){
 				user
@@ -919,7 +997,15 @@ impl<T: Trait> Module<T> {
 					}
 				},
 				AttestorJob::StorageChallenge(challenge_id) => {
-
+					if let Some(attestor) = <Roles<T>>::iter_prefix(Role::IdleAttestor).next(){
+						<Roles<T>>::remove(Role::IdleAttestor, attestor.0);
+						if let Some(mut challenge) = <GetChallengeByID<T>>::get(&challenge_id){
+							challenge.attestor = Some(attestor.0);
+							<GetChallengeByID<T>>::insert(&challenge_id, challenge);
+						}
+						Self::deposit_event(RawEvent::NewStorageChallenge(challenge_id.clone()));
+						break;
+					}
 				}
 			}
 		}
