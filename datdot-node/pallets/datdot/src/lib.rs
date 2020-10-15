@@ -252,7 +252,7 @@ struct Contract<T: Trait> {
 	ranges: Ranges<ChunkIndex>,
 	encoders: Vec<T::UserId>,
 	hosters: Vec<T::UserId>,
-	active: Vec<T::UserId>,
+	active_hosters: Vec<T::UserId>,
 	attestor: T::UserId
 }
 
@@ -383,7 +383,8 @@ pub type Proof = Public;
 struct PerformanceChallenge<T: Trait> {
 	id: T::PerformanceChallengeId,
 	attestors: Option<Vec<T::UserId>>,
-	contract: T::ContractId
+	contract: T::ContractId,
+	hoster: T::UserId
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -714,9 +715,9 @@ decl_module!{
 			let user = Self::load_user(user_address);
 			if let Some(mut contract) = <GetContractByID<T>>::get(contract_id){
 				ensure!(contract.hosters.contains(&user.id), "TODO permission error");
-				if !contract.active.contains(&user.id) {
-					contract.active.push(user.id);
-				} else if contract.active.len() == contract.hosters.len() {
+				if !contract.active_hosters.contains(&user.id) {
+					contract.active_hosters.push(user.id);
+				} else if contract.active_hosters.len() == contract.hosters.len() {
 					for current_encoder in contract.clone().encoders {
 						<Roles<T>>::insert(Role::IdleEncoder, current_encoder.clone(), true);
 					}
@@ -767,6 +768,9 @@ decl_module!{
 				<GetChallengeByID<T>>::insert(challenge_id, challenge.clone());
 				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
 				Self::give_attestors_jobs(&[], &mut [AttestorJob::StorageChallenge(challenge_id.clone())]);
+				if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
+					Self::schedule_challenges(contract_id, hoster_id, plan, &[ChallengeType::StorageChallenge]);
+				}
 			} else {
 				fail!("TODO contract missing error");
 			}
@@ -827,7 +831,7 @@ decl_module!{
 		else DB.attestorJobs.push({ fnName: 'emitPerformanceChallenge', opts: performanceChallenge })
 		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn request_performance_challenge(origin, contract_id: T::ContractId ){
+		fn request_performance_challenge(origin, contract_id: T::ContractId, hoster_id: T::UserId){
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
 			//TODO ensure user is sponsor 
@@ -835,10 +839,16 @@ decl_module!{
 			let attestation = PerformanceChallenge::<T> {
 				id: attestation_id.clone(),
 				attestors: None,
-				contract: contract_id
+				contract: contract_id,
+				hoster: hoster_id
 			};
 			<GetPerformanceChallengeByID<T>>::insert(attestation_id, attestation.clone());
 			Self::give_attestors_jobs(&mut [], &mut [AttestorJob::PerformanceChallenge(attestation_id)]);
+			if let Some(contract) = <GetContractByID<T>>::get(contract_id){
+				if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
+					Self::schedule_challenges(contract_id, hoster_id, plan, &[ChallengeType::PerformanceChallenge]);
+				}
+			}
 		}
 
 		/*
@@ -891,55 +901,54 @@ impl<T: Trait> Module<T> {
 	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){
 		if let Some(contract) = <GetContractByID<T>>::get(contract_id){
 			if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
-				if let Some(sponsor) = <GetUserByID<T>>::get(&plan.sponsor){
-					let sponsor_origin = RawOrigin::Signed(sponsor.address);
+
 					Self::schedule_challenges(
 						contract_id,
-						Some(hoster_id),
+						hoster_id,
 						plan,
-						sponsor_origin,
 						&[ChallengeType::StorageChallenge,ChallengeType::PerformanceChallenge]
 					);
-				}
 			}
 		}
 	}
 
 	fn schedule_challenges(
 		contract_id: T::ContractId,
-		hoster_id: Option<T::UserId>,
+		hoster_id: T::UserId,
 		plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>,
-		sponsor_origin: RawOrigin<T::AccountId>,
 		challenge_types: &[ChallengeType]
 	){
 		// if plan.until.time > time now, do logic below
-		for challenge_type in challenge_types {
-			let challenge_call: Call<T> = match challenge_type {
-				ChallengeType::StorageChallenge => {
-					Call::request_storage_challenge(contract_id, hoster_id.unwrap())
-				},
-				ChallengeType::PerformanceChallenge => {
-					Call::request_performance_challenge(contract_id)
-				}
-			};
-			//schedule based on defaults
-			// challenge request types: 0 = storage, 1 = performance
-			let challenge_delay: <T as system::Trait>::BlockNumber = T::ChallengeDelay::get();
-			if plan.schedules.len() == 0 {
-				(contract_id, hoster_id, challenge_type).using_encoded(
-					|id_bytes|{
-						T::Scheduler::schedule_named(
-							id_bytes.to_vec(),
-							DispatchTime::After(challenge_delay),
-							None,
-							254,
-							sponsor_origin.clone(),
-							challenge_call.into()
-						);
+		if let Some(sponsor) = <GetUserByID<T>>::get(&plan.sponsor){
+			let sponsor_origin = RawOrigin::Signed(sponsor.address);
+			for challenge_type in challenge_types {
+				let challenge_call: Call<T> = match challenge_type {
+					ChallengeType::StorageChallenge => {
+						Call::request_storage_challenge(contract_id, hoster_id)
+					},
+					ChallengeType::PerformanceChallenge => {
+						Call::request_performance_challenge(contract_id, hoster_id)
 					}
-				)
-			} else {
-				//schedule based on plan_schedules
+				};
+				//schedule based on defaults
+				// challenge request types: 0 = storage, 1 = performance
+				let challenge_delay: <T as system::Trait>::BlockNumber = T::ChallengeDelay::get();
+				if plan.schedules.len() == 0 {
+					(contract_id, hoster_id, challenge_type).using_encoded(
+						|id_bytes|{
+							T::Scheduler::schedule_named(
+								id_bytes.to_vec(),
+								DispatchTime::After(challenge_delay),
+								None,
+								254,
+								sponsor_origin.clone(),
+								challenge_call.into()
+							);
+						}
+					)
+				} else {
+					//schedule based on plan_schedules
+				}
 			}
 		}
 	}
