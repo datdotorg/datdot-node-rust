@@ -578,11 +578,26 @@ decl_module!{
 				sponsor: user.id,
 				..plan
 			};
-			<GetPlanByID<T>>::insert(next_plan_id, new_plan.clone());
+			<GetPlanByID<T>>::insert(next_plan_id.clone(), new_plan.clone());
 			let plan_id = next_plan_id.clone();
 			<GetNextPlanID<T>>::put(next_plan_id+One::one());
+			//unzip plan 
+			Self::split_plan_into_orders(plan_id.clone());
+			//verify plan.from is now or in past,
+			//else schedule scheduled_make_contracts in the future
+			//{
+				//get the queue
+				//try to find providers
+				//make contracts
+			Self::try_contract();
+			//}
 			Self::deposit_event(RawEvent::NewPlan(plan_id.clone()));
-			
+		}
+
+		/// If within Self::try_contract the queue of unhosted sets is not zero, this extrinsic is scheduled
+		/// calls try_contract again 
+		fn scheduled_try_contract(origin){
+			Self::try_contract();
 		}
 
 		/*
@@ -898,10 +913,37 @@ decl_module!{
 ******************************************************************************/
 impl<T: Trait> Module<T> {
 
+	fn try_contract(plan_id: T::PlanId){
+		//0 get feeds from plan, queue of waiting plans, up to x plans, up to y feeds
+		//1 for each feed split feeds into sets (of 10 chunks?)
+		//2 for each set, get providers (n encoders, n hosters, 1 attestor),
+		//2 cont. if insufficient, or no hosters are idle, go to 5
+		//2 cont. all providers must be unique by UserId.
+		//3 for each "providers" create a contract and store
+		//4 emit NewContract event for every contract, and END
+		//5 add plan to queue of waiting plans
+
+		//optimize:
+		//0 get feeds from plan - get ranges from feeds,
+		//1 feedranges = [(plan_id, feed_id, ranges)] -1..n-> orders = [(plan_id, feed_id, avoid, set)]
+		// "avoid" is list of accounts that should be avoided for this feed
+		// add orders from <queue> to orders (if plan is no longer active, drop them, if ranges have changed, amend them),
+		// up to some max value x for the total size of orders 
+		//2 create [providers] of len == orders.len() using orders
+		// use "avoid" to remove values from set being randomly selected from before selection
+		// if set becomes too small to fill contract, return None
+		//3 for each feedset[n], if providers[n] is None/null append feedset to <queue> tagged with their plan, else:
+		//3a create contract
+		//3b contract.feed = orders[n].0
+		//3c contract.providers = providers[n]
+		//3d store contract
+		//3e emit NewContract
+		//4 if orders is non-zero, save it and schedule the scheduled_try_contract extrinsic.
+	}
+
 	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){
 		if let Some(contract) = <GetContractByID<T>>::get(contract_id){
 			if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
-
 					Self::schedule_challenges(
 						contract_id,
 						hoster_id,
@@ -982,7 +1024,7 @@ impl<T: Trait> Module<T> {
 			<Roles<T>>::insert(Role::IdleAttestor, attestor, true);
 		}
 		let mut old_job_queue = <GetAttestorJobQueue<T>>::get();
-		let mut job_queue_slice = [jobs, old_job_queue.as_mut_slice()].concat();
+		let mut job_queue_slice = [old_job_queue.as_mut_slice(), jobs].concat();
 		let job_queue = job_queue_slice.iter();
 		for job in job_queue.clone() {
 			match job {
