@@ -123,6 +123,7 @@ pub trait Trait: system::Trait{
 	//CONSTS
 	type PerformanceAttestorCount: Get<u8>;
 	type ChallengeDelay: Get<<Self as system::Trait>::BlockNumber>;
+	type ContractSetSize: Get<u64>;
 }
 
 
@@ -195,7 +196,8 @@ struct Feed<T: Trait> {
 	id: T::FeedId,
 	publickey: FeedKey,
 	meta: TreeRoot,
-	publisher: T::UserId
+	publisher: T::UserId,
+	ranges: Ranges<u64>
 }
 
 type Ranges<C> = Vec<(C, C)>;
@@ -238,7 +240,7 @@ pub struct Plan<PlanId, FeedId, Time, UserId> {
 	config: Config,
 	schedules: Vec<Schedule<Time>>,
 	sponsor: UserId,
-	unhosted_feeds: Vec<FeedId>
+	contracts: Vec<PlanId>
 }
 
 struct Expirable<Item, Time> {
@@ -250,6 +252,10 @@ struct Contract<T: Trait> {
 	id: T::ContractId,
 	plan: T::PlanId,
 	ranges: Ranges<ChunkIndex>,
+	providers: Option<Providers<T>>
+}
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
+struct Providers<T: Trait> {
 	encoders: Vec<T::UserId>,
 	hosters: Vec<T::UserId>,
 	active_hosters: Vec<T::UserId>,
@@ -472,6 +478,7 @@ decl_storage! {
 		pub GetNextAttestationID: T::PerformanceChallengeId;
 		pub Nonce: u64;
 		pub GetAttestorJobQueue: Vec<AttestorJob<T::ChallengeId, T::PerformanceChallengeId>>;
+		pub DraftContractsQueue: Vec<T::ContractId>;
 		// LOOKUPS (created as neccesary)
 		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::UserId, T::AccountId, T::Moment>>;
 		// ROLES ARRAY
@@ -531,6 +538,7 @@ decl_module!{
 			} else {
 				let feed_id : T::FeedId;
 				let next_feed_id = <GetNextFeedID<T>>::get();
+				//TODO feed.ranges from?
 				let new_feed = Feed::<T> {
 					id: next_feed_id.clone(),
 					publickey: merkle_root.0,
@@ -539,7 +547,8 @@ decl_module!{
 						hash_type: merkle_root.1.hash_type,
 						children: merkle_root.1.children
 					},
-					publisher: user.id
+					publisher: user.id,
+					ranges: Vec::new()
 				};
 				<GetFeedByID<T>>::insert(next_feed_id, new_feed.clone());
 				<GetFeedByKey<T>>::insert(merkle_root.0, new_feed.clone());
@@ -582,22 +591,23 @@ decl_module!{
 			let plan_id = next_plan_id.clone();
 			<GetNextPlanID<T>>::put(next_plan_id+One::one());
 			//unzip plan 
-			Self::split_plan_into_orders(plan_id.clone());
+			Self::make_draft_contracts(new_plan);
 			//verify plan.from is now or in past,
 			//else schedule scheduled_make_contracts in the future
 			//{
 				//get the queue
 				//try to find providers
-				//make contracts
-			Self::try_contract();
+				//emit events
 			//}
 			Self::deposit_event(RawEvent::NewPlan(plan_id.clone()));
 		}
 
-		/// If within Self::try_contract the queue of unhosted sets is not zero, this extrinsic is scheduled
-		/// calls try_contract again 
-		fn scheduled_try_contract(origin){
-			Self::try_contract();
+		// If within Self::make_draft_contracts the queue of unhosted sets is not zero, this extrinsic is scheduled
+		// calls make_draft_contracts again 
+		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn scheduled_activate_contracts(origin){
+			//todo origins
+			Self::activate_contracts();
 		}
 
 		/*
@@ -729,18 +739,23 @@ decl_module!{
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
 			if let Some(mut contract) = <GetContractByID<T>>::get(contract_id){
-				ensure!(contract.hosters.contains(&user.id), "TODO permission error");
-				if !contract.active_hosters.contains(&user.id) {
-					contract.active_hosters.push(user.id);
-				} else if contract.active_hosters.len() == contract.hosters.len() {
-					for current_encoder in contract.clone().encoders {
-						<Roles<T>>::insert(Role::IdleEncoder, current_encoder.clone(), true);
+				if let Some(mut providers) = contract.providers {
+					ensure!(providers.hosters.contains(&user.id), "TODO permission error");
+					if !providers.active_hosters.contains(&user.id) {
+						providers.active_hosters.push(user.id);
+					} else if providers.active_hosters.len() == providers.hosters.len() {
+						for current_encoder in providers.clone().encoders {
+							<Roles<T>>::insert(Role::IdleEncoder, current_encoder.clone(), true);
+						}
 					}
+					contract.providers = Some(providers.clone());
+					<GetContractByID<T>>::insert(contract_id, contract.clone());
+					Self::give_attestors_jobs(&[providers.attestor], &mut []);
+					Self::start_challenges(contract_id, user.id);
+					Self::deposit_event(RawEvent::HostingStarted(contract_id));
+				} else {
+					//TODO contract is still in draft
 				}
-				<GetContractByID<T>>::insert(contract_id, contract.clone());
-				Self::give_attestors_jobs(&[contract.attestor], &mut []);
-				Self::start_challenges(contract_id, user.id);
-				Self::deposit_event(RawEvent::HostingStarted(contract_id));
 			};
 			//todo should be economic logic, still under consideration.
 		}
@@ -858,6 +873,7 @@ decl_module!{
 				hoster: hoster_id
 			};
 			<GetPerformanceChallengeByID<T>>::insert(attestation_id, attestation.clone());
+			<GetNextAttestationID<T>>::put(attestation_id.clone()+One::one());
 			Self::give_attestors_jobs(&mut [], &mut [AttestorJob::PerformanceChallenge(attestation_id)]);
 			if let Some(contract) = <GetContractByID<T>>::get(contract_id){
 				if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
@@ -913,32 +929,44 @@ decl_module!{
 ******************************************************************************/
 impl<T: Trait> Module<T> {
 
-	fn try_contract(plan_id: T::PlanId){
-		//0 get feeds from plan, queue of waiting plans, up to x plans, up to y feeds
-		//1 for each feed split feeds into sets (of 10 chunks?)
-		//2 for each set, get providers (n encoders, n hosters, 1 attestor),
-		//2 cont. if insufficient, or no hosters are idle, go to 5
-		//2 cont. all providers must be unique by UserId.
-		//3 for each "providers" create a contract and store
-		//4 emit NewContract event for every contract, and END
-		//5 add plan to queue of waiting plans
+	fn make_draft_contracts(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>){
+		let mut draft_contracts: Vec<T::ContractId> = plan.feeds.iter().flat_map(|feed_id|{
+			let feed_opt: Option<Feed<T>> = <GetFeedByID<T>>::get(feed_id);
+			match feed_opt {
+				Some(feed) => {
+					let sets = Self::split_main(feed.ranges);
+					sets.iter().map(|set|{
+						let contract_id = <GetNextContractID<T>>::get();
+						let draft_contract = Contract::<T> {
+							id: contract_id.clone(),
+							plan: plan.id,
+							ranges: set.to_vec(),
+							providers: None
+						};
+						<GetContractByID<T>>::insert(contract_id, draft_contract);
+						<GetNextContractID<T>>::put(contract_id.clone()+One::one());
+						contract_id
+					}).collect()
+				},
+				None => {
+					Vec::new()
+				}
+			}
+		}).collect();
+		let mut current_draft_contracts = <DraftContractsQueue<T>>::get();
+		current_draft_contracts.append(&mut draft_contracts);
+		<DraftContractsQueue<T>>::put(current_draft_contracts);
+	}
 
-		//optimize:
-		//0 get feeds from plan - get ranges from feeds,
-		//1 feedranges = [(plan_id, feed_id, ranges)] -1..n-> orders = [(plan_id, feed_id, avoid, set)]
-		// "avoid" is list of accounts that should be avoided for this feed
-		// add orders from <queue> to orders (if plan is no longer active, drop them, if ranges have changed, amend them),
-		// up to some max value x for the total size of orders 
-		//2 create [providers] of len == orders.len() using orders
-		// use "avoid" to remove values from set being randomly selected from before selection
+	fn activate_contracts(){
+		//2 create [providers] of len == orders.len() using contracts
 		// if set becomes too small to fill contract, return None
-		//3 for each feedset[n], if providers[n] is None/null append feedset to <queue> tagged with their plan, else:
-		//3a create contract
-		//3b contract.feed = orders[n].0
-		//3c contract.providers = providers[n]
-		//3d store contract
-		//3e emit NewContract
-		//4 if orders is non-zero, save it and schedule the scheduled_try_contract extrinsic.
+		//3 for each contracts[n], if providers[n] is None/null append feedset to <queue> tagged with their plan, else get contract from ID and:
+		//3a contract.feed = orders[n].0
+		//3b contract.providers = providers[n]
+		//3c store contract
+		//3d emit NewContract
+		//4 if  is non-zero, save it and schedule the scheduled_make_draft_contracts extrinsic
 	}
 
 	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){
@@ -1069,6 +1097,7 @@ impl<T: Trait> Module<T> {
 		//TODO, currently only returns first chunk of every available range,
 		//should return some random selection.
 		ranges.iter().map(|x|x.0).collect()
+		//todo, get rng from 0->set_size-1, get a single random index based on that.
 	}
 
 	fn validate_proof(proof: Proof, challenge: StorageChallenge<T>) -> bool {
@@ -1126,5 +1155,113 @@ impl<T: Trait> Module<T> {
 			}
 		}).collect();
 		Self::get_random_of_vec(influence, members, count)
+	}
+
+	fn set_len(set_in: Vec<(u64, u64)>) -> u64 {
+		set_in.iter().fold(0, |mut count, input_range|{
+			if input_range.1 > input_range.0 {
+				count += input_range.1 - input_range.0;
+			} else {
+				//bad range, but...
+				count += input_range.0 - input_range.1;
+			}
+			count+=1;
+			count
+		})
+	}
+
+	fn process_previous_set(temp_out: &mut Vec<Vec<(u64,u64)>>) -> u64 {
+		let current_pointer = temp_out.last();
+		let set_max_index : u64 = T::ContractSetSize::get();
+		let set_size : u64 = T::ContractSetSize::get();
+		match current_pointer {
+			Some(last_set) => {
+				//last set is either less than or equal to set size,
+				let set_length =  Self::set_len(last_set.to_vec());
+				if set_length >= 0 && set_length <= set_max_index {
+					//get the remaining required
+					let remains: u64 = set_size - Self::set_len(last_set.to_vec());
+					//println!("last set {:?} was smaller, remainder {:?}", last_set, remains);
+					remains	
+				} else if set_length == set_size {
+					//if equal, add new set to temp_out, and set remaining to 10
+					
+					//println!("last set {:?} was equal", last_set);
+					temp_out.push(Vec::new());
+					set_size
+				} else {
+						
+					//println!("last set {:?} was larger, should split", last_set);
+					let mut split_set = Self::split_main(last_set.to_vec());
+					//println!("split to {:?} ", split_set);
+					temp_out.pop();
+					temp_out.append(&mut split_set);
+					Self::process_previous_set(temp_out);
+					set_size
+				}
+				
+			},
+			None => {
+				temp_out.push(Vec::new());
+				set_size
+			}
+		}
+		
+	}
+
+	fn merge_last_consecutive(temp_out: &mut Vec<Vec<(u64,u64)>>){
+		if let Some(last) = temp_out.pop(){
+			let mut new: Vec<(u64, u64)> = Vec::new();
+			let mut maybe_previous_end: Option<u64> = None;
+			for (start, end) in last {
+				if let Some(previous_end) = maybe_previous_end {
+					if start == previous_end+1 {
+						if let Some(previous_range) = new.pop(){
+							new.push((previous_range.0, end));
+						}
+					} else {
+						new.push((start, end));
+					}
+				} else {
+					new.push((start, end));
+				}
+				maybe_previous_end = Some(end);
+			}
+			temp_out.push(new);
+		}
+	}
+
+	fn split_main(ranges: Vec<(u64,u64)>) -> Vec<Vec<(u64, u64)>> {
+		ranges.iter().fold(Vec::new(),|mut temp_out, input_range|{
+			let remaining = Self::process_previous_set(&mut temp_out);
+			let mut range_vec = Vec::new();
+			range_vec.push(*input_range);
+			if Self::set_len(range_vec) < remaining {
+				let mut last_set = temp_out.pop().unwrap();
+				last_set.push(*input_range);
+				temp_out.push(last_set);
+			} else {
+				let split_index = input_range.0 as u64 + (remaining-1 as u64);
+				let new_range = (input_range.0, split_index);
+				let mut last_set = temp_out.pop().unwrap();
+				
+				//println!("insert range into previous set: {:?}", new_range);
+				last_set.push(new_range);
+				temp_out.push(last_set);
+				
+				
+				let next_range = (split_index+1, input_range.1);
+				if next_range.0 <= next_range.1 { 
+					let mut next_set = Vec::new();
+					next_set.push(next_range);
+					//println!("insert new set: {:?}", next_set);
+					temp_out.push(next_set);
+				}
+			}
+			//println!("pre-merge: {:?}", temp_out);
+			Self::merge_last_consecutive(&mut temp_out);
+			//println!("post-merge: {:?}", temp_out);
+			temp_out
+		})
 	}
 }
