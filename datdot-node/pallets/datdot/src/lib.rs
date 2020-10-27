@@ -124,6 +124,7 @@ pub trait Trait: system::Trait{
 	type PerformanceAttestorCount: Get<u8>;
 	type ChallengeDelay: Get<<Self as system::Trait>::BlockNumber>;
 	type ContractSetSize: Get<u64>;
+	type ContractActivationCap: Get<u8>;
 }
 
 
@@ -231,7 +232,7 @@ pub struct PlanUntil<Time> {
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-pub struct Plan<PlanId, FeedId, Time, UserId> {
+pub struct Plan<PlanId, FeedId, Time, UserId, ContractId> {
 	id: PlanId,
 	feeds: Vec<FeedId>,
 	from: Time,
@@ -240,7 +241,7 @@ pub struct Plan<PlanId, FeedId, Time, UserId> {
 	config: Config,
 	schedules: Vec<Schedule<Time>>,
 	sponsor: UserId,
-	contracts: Vec<PlanId>
+	contracts: Vec<ContractId>
 }
 
 struct Expirable<Item, Time> {
@@ -467,7 +468,7 @@ decl_storage! {
         pub GetUserByID: map hasher(twox_64_concat) T::UserId => Option<User<T::UserId, T::AccountId, T::Moment>>;
         pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Option<Contract<T>>;
         pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<StorageChallenge<T>>;
-		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>>;
+		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>>;
 		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::PerformanceChallengeId => Option<PerformanceChallenge<T>>;
 		// INTERNALLY REQUIRED STORAGE
 		pub GetNextFeedID: T::FeedId;
@@ -578,11 +579,11 @@ decl_module!{
 		handlers.forEach(([name, handler]) => handler(event))
 		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn publish_plan(origin, plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>){
+		fn publish_plan(origin, plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>){
 			let sponsor_address = ensure_signed(origin)?;
 			let user = Self::load_user(sponsor_address);
 			let next_plan_id = <GetNextPlanID<T>>::get();
-			let new_plan = Plan::<T::PlanId, T::FeedId, T::Moment, T::UserId> {
+			let new_plan = Plan::<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId> {
 				id: next_plan_id.clone(),
 				sponsor: user.id,
 				..plan
@@ -607,7 +608,7 @@ decl_module!{
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn scheduled_activate_contracts(origin){
 			//todo origins
-			Self::activate_contracts();
+			Self::try_activate_draft_contracts();
 		}
 
 		/*
@@ -632,6 +633,7 @@ decl_module!{
 			Self::save_user(&mut user);
 			<Roles<T>>::insert(Role::Encoder, user.id, true);
 			<Roles<T>>::insert(Role::IdleEncoder, user.id, true);
+			Self::try_activate_draft_contracts();
 		}
 
 		/*
@@ -655,6 +657,7 @@ decl_module!{
 			Self::save_user(&mut user);
 			<Roles<T>>::insert(Role::Hoster, user.id, true);
 			<Roles<T>>::insert(Role::IdleHoster, user.id, true);
+			Self::try_activate_draft_contracts();
 		}
 
 		/*
@@ -677,6 +680,7 @@ decl_module!{
 			Self::save_user(&mut user);
 			<Roles<T>>::insert(Role::Attestor, user.id, true);
 			Self::give_attestors_jobs(&mut [user.id], &mut []);
+			Self::try_activate_draft_contracts();
 		}
 
 		// Ensure that these match new logic TODO
@@ -929,7 +933,7 @@ decl_module!{
 ******************************************************************************/
 impl<T: Trait> Module<T> {
 
-	fn make_draft_contracts(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>){
+	fn make_draft_contracts(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>){
 		let mut draft_contracts: Vec<T::ContractId> = plan.feeds.iter().flat_map(|feed_id|{
 			let feed_opt: Option<Feed<T>> = <GetFeedByID<T>>::get(feed_id);
 			match feed_opt {
@@ -958,15 +962,64 @@ impl<T: Trait> Module<T> {
 		<DraftContractsQueue<T>>::put(current_draft_contracts);
 	}
 
-	fn activate_contracts(){
-		//2 create [providers] of len == orders.len() using contracts
-		// if set becomes too small to fill contract, return None
-		//3 for each contracts[n], if providers[n] is None/null append feedset to <queue> tagged with their plan, else get contract from ID and:
-		//3a contract.feed = orders[n].0
-		//3b contract.providers = providers[n]
-		//3c store contract
-		//3d emit NewContract
-		//4 if  is non-zero, save it and schedule the scheduled_make_draft_contracts extrinsic
+	fn try_activate_draft_contracts(){
+		let mut failed_contracts: Vec<T::ContractId> = Vec::new();
+		let mut failed_contract_count = 0;
+		let mut current_draft_contracts: Vec<T::ContractId> = <DraftContractsQueue<T>>::get();
+		for contract_id in current_draft_contracts.iter_mut().take(T::ContractActivationCap::get() as usize) {
+			if let Err(Some(failed_contract)) = Self::activate_single_draft_contract(*contract_id){
+				failed_contract_count += 1;
+				failed_contracts.push(failed_contract);
+			}
+		}
+		//and try that many MORE contracts, but ONLY ONCE.
+		for contract_id in current_draft_contracts.iter_mut().take(failed_contract_count){
+			if let Err(Some(failed_contract)) = Self::activate_single_draft_contract(*contract_id){
+				failed_contracts.push(failed_contract);
+			}
+		}
+		//currently we put failed contracts back into the front, but we need some fallback 
+		failed_contracts.append(&mut current_draft_contracts);
+		<DraftContractsQueue<T>>::put(failed_contracts);
+		
+	}
+
+	fn activate_single_draft_contract(contract_id: T::ContractId) -> Result<(),Option<T::ContractId>> {
+		//contract should exist, if removed, should remove from queue too, so unwrap
+		let contract_option = <GetContractByID<T>>::get(contract_id);
+		if let Some(mut contract) = contract_option {
+			if let Some(mut plan) = <GetPlanByID<T>>::get(contract.plan){
+				if let Some(providers) = Self::get_providers(plan.clone()){
+					contract.providers = Some(providers);
+					plan.contracts.push(contract_id);
+					<GetContractByID<T>>::insert(contract_id, contract);
+					<GetPlanByID<T>>::insert(plan.clone().id, plan.clone());
+					Self::deposit_event(RawEvent::NewContract(contract_id.clone()));
+					//Self::schedule_contract_followup(contract, plan);
+					Ok(())
+				} else {
+					//not enough providers, throw error and ask to requeue contract
+					Err(Some(contract_id))
+				}
+			} else {
+				//plan is missing, this should also not be possible/an error
+				// TODO remove plan for missing plan
+				Err(None)
+			}
+		} else {
+			//if the contract doesn't exist, this is an error, but we should return no ID
+			//so the ID is not readded to queue
+			Err(None)
+		}
+	}
+
+	fn get_providers(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Option<Providers<T>> {
+		Some(Providers::<T> {
+			encoders: Vec::new(),
+			hosters: Vec::new(),
+			active_hosters: Vec::new(),
+			attestor: plan.sponsor
+		})
 	}
 
 	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){
@@ -985,7 +1038,7 @@ impl<T: Trait> Module<T> {
 	fn schedule_challenges(
 		contract_id: T::ContractId,
 		hoster_id: T::UserId,
-		plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId>,
+		plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>,
 		challenge_types: &[ChallengeType]
 	){
 		// if plan.until.time > time now, do logic below
