@@ -125,6 +125,8 @@ pub trait Trait: system::Trait{
 	type ChallengeDelay: Get<<Self as system::Trait>::BlockNumber>;
 	type ContractSetSize: Get<u64>;
 	type ContractActivationCap: Get<u8>;
+	type EncodersPerContract: Get<u8>;
+	type HostersPerContract: Get<u8>;
 }
 
 
@@ -197,8 +199,7 @@ struct Feed<T: Trait> {
 	id: T::FeedId,
 	publickey: FeedKey,
 	meta: TreeRoot,
-	publisher: T::UserId,
-	ranges: Ranges<u64>
+	publisher: T::UserId
 }
 
 type Ranges<C> = Vec<(C, C)>;
@@ -232,9 +233,15 @@ pub struct PlanUntil<Time> {
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
+pub struct FeedInPlan<A, B>{
+	id: A,
+	ranges: B
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 pub struct Plan<PlanId, FeedId, Time, UserId, ContractId> {
 	id: PlanId,
-	feeds: Vec<FeedId>,
+	feeds: Vec<FeedInPlan<FeedId, Ranges<u64>>>,
 	from: Time,
 	until: PlanUntil<Time>,
 	importance: u8,
@@ -483,7 +490,7 @@ decl_storage! {
 		// LOOKUPS (created as neccesary)
 		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::UserId, T::AccountId, T::Moment>>;
 		// ROLES ARRAY
-		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => bool;
+		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => ();
 	}
 }
 
@@ -548,8 +555,7 @@ decl_module!{
 						hash_type: merkle_root.1.hash_type,
 						children: merkle_root.1.children
 					},
-					publisher: user.id,
-					ranges: Vec::new()
+					publisher: user.id
 				};
 				<GetFeedByID<T>>::insert(next_feed_id, new_feed.clone());
 				<GetFeedByKey<T>>::insert(merkle_root.0, new_feed.clone());
@@ -631,8 +637,8 @@ decl_module!{
 			user.encoder_form = Some(form);
 			user.encoder_key = Some(encoder_key);
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Encoder, user.id, true);
-			<Roles<T>>::insert(Role::IdleEncoder, user.id, true);
+			<Roles<T>>::insert(Role::Encoder, user.id, ());
+			<Roles<T>>::insert(Role::IdleEncoder, user.id, ());
 			Self::try_activate_draft_contracts();
 		}
 
@@ -655,8 +661,8 @@ decl_module!{
 			user.hoster_form = Some(form);
 			user.hoster_key = Some(hoster_key);
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Hoster, user.id, true);
-			<Roles<T>>::insert(Role::IdleHoster, user.id, true);
+			<Roles<T>>::insert(Role::Hoster, user.id, ());
+			<Roles<T>>::insert(Role::IdleHoster, user.id, ());
 			Self::try_activate_draft_contracts();
 		}
 
@@ -678,7 +684,7 @@ decl_module!{
 			user.attestor_form = Some(form);
 			user.attestor_key = Some(attestor_key);
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Attestor, user.id, true);
+			<Roles<T>>::insert(Role::Attestor, user.id, ());
 			Self::give_attestors_jobs(&mut [user.id], &mut []);
 			Self::try_activate_draft_contracts();
 		}
@@ -749,7 +755,7 @@ decl_module!{
 						providers.active_hosters.push(user.id);
 					} else if providers.active_hosters.len() == providers.hosters.len() {
 						for current_encoder in providers.clone().encoders {
-							<Roles<T>>::insert(Role::IdleEncoder, current_encoder.clone(), true);
+							<Roles<T>>::insert(Role::IdleEncoder, current_encoder.clone(), ());
 						}
 					}
 					contract.providers = Some(providers.clone());
@@ -934,11 +940,11 @@ decl_module!{
 impl<T: Trait> Module<T> {
 
 	fn make_draft_contracts(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>){
-		let mut draft_contracts: Vec<T::ContractId> = plan.feeds.iter().flat_map(|feed_id|{
-			let feed_opt: Option<Feed<T>> = <GetFeedByID<T>>::get(feed_id);
+		let mut draft_contracts: Vec<T::ContractId> = plan.feeds.iter().flat_map(|feed_struct|{
+			let feed_opt: Option<Feed<T>> = <GetFeedByID<T>>::get(feed_struct.id);
 			match feed_opt {
 				Some(feed) => {
-					let sets = Self::split_main(feed.ranges);
+					let sets = Self::split_main(feed_struct.clone().ranges);
 					sets.iter().map(|set|{
 						let contract_id = <GetNextContractID<T>>::get();
 						let draft_contract = Contract::<T> {
@@ -1014,12 +1020,38 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn get_providers(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Option<Providers<T>> {
-		Some(Providers::<T> {
-			encoders: Vec::new(),
-			hosters: Vec::new(),
-			active_hosters: Vec::new(),
-			attestor: plan.sponsor
-		})
+		let mut avoid = Vec::new();
+		avoid.push(plan.sponsor);
+		for feed_struct in plan.feeds {
+			if let Some(feed) = <GetFeedByID<T>>::get(feed_struct.id){
+				avoid.push(feed.publisher.clone());
+			}
+		}
+		let attestor_option = <Roles<T>>::iter_prefix(Role::IdleAttestor).skip_while(|(item, _)|
+			avoid.contains(item)
+		).next();
+		if let Some((attestor, _)) = attestor_option {
+			let hosters: Vec<T::UserId> = <Roles<T>>::iter_prefix(Role::IdleHoster)
+				.take_while(|(x,_)|{!avoid.contains(x)})
+				.map(|(x, _)|x)
+				.collect();
+			if hosters.len() < T::HostersPerContract::get() as usize { return None } else {
+				let encoders: Vec<T::UserId> = <Roles<T>>::iter_prefix(Role::IdleEncoder)
+					.take_while(|(x,_)|{!avoid.contains(x)})
+					.map(|(x, _)|x)
+					.collect();
+				if encoders.len() < T::EncodersPerContract::get() as usize { return None } else {
+					Some(Providers::<T> {
+						encoders: encoders,
+						hosters: hosters,
+						active_hosters: Vec::new(),
+						attestor: attestor
+					})
+				}
+			}
+		} else {
+			None
+		}
 	}
 
 	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){
@@ -1102,7 +1134,7 @@ impl<T: Trait> Module<T> {
 		jobs: &mut [AttestorJob<T::ChallengeId, T::PerformanceChallengeId>]
 	){
 		for attestor in attestors {
-			<Roles<T>>::insert(Role::IdleAttestor, attestor, true);
+			<Roles<T>>::insert(Role::IdleAttestor, attestor, ());
 		}
 		let mut old_job_queue = <GetAttestorJobQueue<T>>::get();
 		let mut job_queue_slice = [old_job_queue.as_mut_slice(), jobs].concat();
@@ -1201,7 +1233,7 @@ impl<T: Trait> Module<T> {
 
 	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<T::UserId> {
 		let members : Vec<T::UserId> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
-			if x.1{
+			if x.1 == (){
 				Some(x.0)
 			} else {
 				None
