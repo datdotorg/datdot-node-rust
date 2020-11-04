@@ -1,157 +1,354 @@
 //! Service and ServiceFactory implementation. Specialized wrapper over substrate service.
 
-use sc_consensus::LongestChain;
+use std::sync::Arc;
+use std::time::Duration;
+use sc_client_api::{ExecutorProvider, RemoteBackend};
+use runtime::{self, opaque::Block, RuntimeApi};
+use sc_service::{error::Error as ServiceError, Configuration, TaskManager};
+use sp_inherents::InherentDataProviders;
 use sc_executor::native_executor_instance;
 pub use sc_executor::NativeExecutor;
-use sc_network::config::DummyFinalityProofRequestBuilder;
-use sc_service::{error::Error as ServiceError, AbstractService, Configuration, ServiceBuilder};
-use sp_inherents::InherentDataProviders;
-use std::sync::Arc;
+use sc_consensus_babe;
+use sc_finality_grandpa::{
+	self as grandpa,
+	FinalityProofProvider as GrandpaFinalityProofProvider,
+};
 
-// Our native executor instance.
+pub use sc_executor::NativeExecutor;
+use sc_executor::native_executor_instance;
+
+// Declare an instance of the native executor named `Executor`. Include the wasm binary as the
+// equivalent wasm code.
 native_executor_instance!(
 	pub Executor,
-	runtime::api::dispatch,
-	runtime::native_version,
+	node_runtime::api::dispatch,
+	node_runtime::native_version,
+	frame_benchmarking::benchmarking::HostFunctions,
 );
 
-/// Starts a `ServiceBuilder` for a full service.
-///
-/// Use this macro if you don't actually need the full service, but just the builder in order to
-/// be able to perform chain operations.
-macro_rules! new_full_start {
-	($config:expr) => {{
-		let builder = sc_service::ServiceBuilder::new_full::<
-			runtime::opaque::Block,
-			runtime::RuntimeApi,
-			crate::service::Executor,
-		>($config)?
-		.with_select_chain(|_config, backend| Ok(sc_consensus::LongestChain::new(backend.clone())))?
-		.with_transaction_pool(|builder| {
-			let pool_api = sc_transaction_pool::FullChainApi::new(
-				builder.client().clone(),
-			);
-			Ok(sc_transaction_pool::BasicPool::new(
-				builder.config().transaction_pool.clone(),
-				std::sync::Arc::new(pool_api),
-				builder.prometheus_registry(),
-			))
-		})?
-		.with_import_queue(
-			|_config, client, _select_chain, _transaction_pool, spawn_task_handle, registry| {
-				Ok(sc_consensus_manual_seal::import_queue(
-					Box::new(client),
-					spawn_task_handle,
-					registry,
-				))
-			},
-		)?;
+type FullClient = sc_service::TFullClient<Block, RuntimeApi, Executor>;
+type FullBackend = sc_service::TFullBackend<Block>;
+type FullSelectChain = sc_consensus::LongestChain<FullBackend, Block>;
+type FullGrandpaBlockImport =
+	grandpa::GrandpaBlockImport<FullBackend, Block, FullClient, FullSelectChain>;
+type LightClient = sc_service::TLightClient<Block, RuntimeApi, Executor>;
 
-		builder
-		}};
+pub fn new_partial(config: &Configuration) -> Result<sc_service::PartialComponents<
+	FullClient, FullBackend, FullSelectChain,
+	sp_consensus::DefaultImportQueue<Block, FullClient>,
+	sc_transaction_pool::FullPool<Block, FullClient>,
+	()
+>, ServiceError> {
+	let (client, backend, keystore_container, task_manager) =
+		sc_service::new_full_parts::<Block, RuntimeApi, Executor>(&config)?;
+	let client = Arc::new(client);
+
+	let select_chain = sc_consensus::LongestChain::new(backend.clone());
+
+	let transaction_pool = sc_transaction_pool::BasicPool::new_full(
+		config.transaction_pool.clone(),
+		config.prometheus_registry(),
+		task_manager.spawn_handle(),
+		client.clone(),
+	);
+
+	let (grandpa_block_import, grandpa_link) = grandpa::block_import(
+		client.clone(), &(client.clone() as Arc<_>), select_chain.clone(),
+	)?;
+	let justification_import = grandpa_block_import.clone();
+
+	let (block_import, babe_link) = sc_consensus_babe::block_import(
+		sc_consensus_babe::Config::get_or_compute(&*client)?,
+		grandpa_block_import,
+		client.clone(),
+	)?;
+
+	let inherent_data_providers = sp_inherents::InherentDataProviders::new();
+
+	let import_queue = sc_consensus_babe::import_queue(
+		babe_link.clone(),
+		block_import.clone(),
+		Some(Box::new(justification_import)),
+		None,
+		client.clone(),
+		select_chain.clone(),
+		inherent_data_providers.clone(),
+		&task_manager.spawn_handle(),
+		config.prometheus_registry(),
+		sp_consensus::CanAuthorWithNativeVersion::new(client.executor().clone()),
+	)?;
+
+	let import_setup = (block_import, grandpa_link, babe_link);
+
+	Ok(sc_service::PartialComponents {
+		client, backend, task_manager, keystore_container,
+		select_chain, import_queue, transaction_pool, inherent_data_providers,
+		other: (import_setup)
+	})
+}
+
+pub struct NewFullBase {
+	pub task_manager: TaskManager,
+	pub inherent_data_providers: InherentDataProviders,
+	pub client: Arc<FullClient>,
+	pub network: Arc<NetworkService<Block, <Block as BlockT>::Hash>>,
+	pub network_status_sinks: sc_service::NetworkStatusSinks<Block>,
+	pub transaction_pool: Arc<sc_transaction_pool::FullPool<Block, FullClient>>,
+}
+
+/// Creates a full service from the configuration.
+pub fn new_full_base(
+	config: Configuration,
+	with_startup_data: impl FnOnce(
+		&sc_consensus_babe::BabeBlockImport<Block, FullClient, FullGrandpaBlockImport>,
+		&sc_consensus_babe::BabeLink<Block>,
+	)
+) -> Result<NewFullBase, ServiceError> {
+	let sc_service::PartialComponents {
+		client, backend, mut task_manager, import_queue, keystore_container,
+		select_chain, transaction_pool, inherent_data_providers,
+		other: (rpc_extensions_builder, import_setup, rpc_setup),
+	} = new_partial(&config)?;
+
+	let (shared_voter_state, finality_proof_provider) = rpc_setup;
+
+	let (network, network_status_sinks, system_rpc_tx, network_starter) =
+		sc_service::build_network(sc_service::BuildNetworkParams {
+			config: &config,
+			client: client.clone(),
+			transaction_pool: transaction_pool.clone(),
+			spawn_handle: task_manager.spawn_handle(),
+			import_queue,
+			on_demand: None,
+			block_announce_validator_builder: None,
+			finality_proof_request_builder: None,
+			finality_proof_provider: Some(finality_proof_provider.clone()),
+		})?;
+
+	if config.offchain_worker.enabled {
+		sc_service::build_offchain_workers(
+			&config, backend.clone(), task_manager.spawn_handle(), client.clone(), network.clone(),
+		);
+	}
+
+	let role = config.role.clone();
+	let force_authoring = config.force_authoring;
+	let name = config.network.node_name.clone();
+	let enable_grandpa = !config.disable_grandpa;
+	let prometheus_registry = config.prometheus_registry().cloned();
+	let telemetry_connection_sinks = sc_service::TelemetryConnectionSinks::default();
+
+	sc_service::spawn_tasks(sc_service::SpawnTasksParams {
+		config,
+		backend: backend.clone(),
+		client: client.clone(),
+		keystore: keystore_container.sync_keystore(),
+		network: network.clone(),
+		rpc_extensions_builder: Box::new(rpc_extensions_builder),
+		transaction_pool: transaction_pool.clone(),
+		task_manager: &mut task_manager,
+		on_demand: None,
+		remote_blockchain: None,
+		telemetry_connection_sinks: telemetry_connection_sinks.clone(),
+		network_status_sinks: network_status_sinks.clone(),
+		system_rpc_tx,
+	})?;
+
+	let (block_import, grandpa_link, babe_link) = import_setup;
+
+	(with_startup_data)(&block_import, &babe_link);
+
+	if let sc_service::config::Role::Authority { .. } = &role {
+		let proposer = sc_basic_authorship::ProposerFactory::new(
+			task_manager.spawn_handle(),
+			client.clone(),
+			transaction_pool.clone(),
+			prometheus_registry.as_ref(),
+		);
+
+		let can_author_with =
+			sp_consensus::CanAuthorWithNativeVersion::new(client.executor().clone());
+
+		let babe_config = sc_consensus_babe::BabeParams {
+			keystore: keystore_container.sync_keystore(),
+			client: client.clone(),
+			select_chain,
+			env: proposer,
+			block_import,
+			sync_oracle: network.clone(),
+			inherent_data_providers: inherent_data_providers.clone(),
+			force_authoring,
+			babe_link,
+			can_author_with,
+		};
+
+		let babe = sc_consensus_babe::start_babe(babe_config)?;
+		task_manager.spawn_essential_handle().spawn_blocking("babe-proposer", babe);
+	}
+
+	// Spawn authority discovery module.
+	if role.is_authority() {
+		let authority_discovery_role = sc_authority_discovery::Role::PublishAndDiscover(
+			keystore_container.keystore(),
+		);
+		let dht_event_stream = network.event_stream("authority-discovery")
+			.filter_map(|e| async move { match e {
+				Event::Dht(e) => Some(e),
+				_ => None,
+			}});
+		let (authority_discovery_worker, _service) = sc_authority_discovery::new_worker_and_service(
+			client.clone(),
+			network.clone(),
+			Box::pin(dht_event_stream),
+			authority_discovery_role,
+			prometheus_registry.clone(),
+		);
+
+		task_manager.spawn_handle().spawn("authority-discovery-worker", authority_discovery_worker.run());
+	}
+
+	// if the node isn't actively participating in consensus then it doesn't
+	// need a keystore, regardless of which protocol we use below.
+	let keystore = if role.is_authority() {
+		Some(keystore_container.sync_keystore())
+	} else {
+		None
+	};
+
+	let config = grandpa::Config {
+		// FIXME #1578 make this available through chainspec
+		gossip_duration: std::time::Duration::from_millis(333),
+		justification_period: 512,
+		name: Some(name),
+		observer_enabled: false,
+		keystore,
+		is_authority: role.is_network_authority(),
+	};
+
+	if enable_grandpa {
+		// start the full GRANDPA voter
+		// NOTE: non-authorities could run the GRANDPA observer protocol, but at
+		// this point the full voter should provide better guarantees of block
+		// and vote data availability than the observer. The observer has not
+		// been tested extensively yet and having most nodes in a network run it
+		// could lead to finality stalls.
+		let grandpa_config = grandpa::GrandpaParams {
+			config,
+			link: grandpa_link,
+			network: network.clone(),
+			telemetry_on_connect: Some(telemetry_connection_sinks.on_connect_stream()),
+			voting_rule: grandpa::VotingRulesBuilder::default().build(),
+			prometheus_registry,
+			shared_voter_state,
+		};
+
+		// the GRANDPA voter task is considered infallible, i.e.
+		// if it fails we take down the service with it.
+		task_manager.spawn_essential_handle().spawn_blocking(
+			"grandpa-voter",
+			grandpa::run_grandpa_voter(grandpa_config)?
+		);
+	} else {
+		grandpa::setup_disabled_grandpa(network.clone())?;
+	}
+
+	network_starter.start_network();
+	Ok(NewFullBase {
+		task_manager,
+		inherent_data_providers,
+		client,
+		network,
+		network_status_sinks,
+		transaction_pool,
+	})
 }
 
 /// Builds a new service for a full client.
-pub fn new_full(config: Configuration) -> Result<impl AbstractService, ServiceError> {
-	let is_authority = config.role.is_authority();
+pub fn new_full(config: Configuration)
+-> Result<TaskManager, ServiceError> {
+	new_full_base(config, |_, _| ()).map(|NewFullBase { task_manager, .. }| {
+		task_manager
+	})
+}
 
-	// This variable is only used when ocw feature is enabled.
-	// Suppress the warning when ocw feature is not enabled.
-	#[allow(unused_variables)]
-	let dev_seed = config.dev_key_seed.clone();
+pub fn new_light_base(config: Configuration) -> Result<(
+	TaskManager, Arc<LightClient>,
+	Arc<NetworkService<Block, <Block as BlockT>::Hash>>,
+	Arc<sc_transaction_pool::LightPool<Block, LightClient, sc_network::config::OnDemand<Block>>>
+), ServiceError> {
+	let (client, backend, keystore_container, mut task_manager, on_demand) =
+		sc_service::new_light_parts::<Block, RuntimeApi, Executor>(&config)?;
 
-	// This isn't great. It includes the timestamp inherent in all blocks
-	// regardless of runtime.
-	let inherent_data_providers = InherentDataProviders::new();
-	inherent_data_providers
-		.register_provider(sp_timestamp::InherentDataProvider)
-		.map_err(Into::into)
-		.map_err(sp_consensus::error::Error::InherentData)?;
+	let select_chain = sc_consensus::LongestChain::new(backend.clone());
 
-	let builder = new_full_start!(config);
-	let service = builder.build_full()?;
+	let transaction_pool = Arc::new(sc_transaction_pool::BasicPool::new_light(
+		config.transaction_pool.clone(),
+		config.prometheus_registry(),
+		task_manager.spawn_handle(),
+		client.clone(),
+		on_demand.clone(),
+	));
 
-	// Initialize seed for signing transaction using off-chain workers
-	#[cfg(feature = "ocw")]
-	{
-		if let Some(seed) = dev_seed {
-			service
-				.keystore()
-				.write()
-				.insert_ephemeral_from_seed_by_type::<runtime::offchain_demo::crypto::Pair>(
-					&seed,
-					runtime::offchain_demo::KEY_TYPE,
-				)
-				.expect("Dev Seed should always succeed.");
-		}
+	let grandpa_block_import = grandpa::light_block_import(
+		client.clone(), backend.clone(), &(client.clone() as Arc<_>),
+		Arc::new(on_demand.checker().clone()),
+	)?;
+
+	let finality_proof_import = grandpa_block_import.clone();
+	let finality_proof_request_builder =
+		finality_proof_import.create_finality_proof_request_builder();
+
+	let (babe_block_import, babe_link) = sc_consensus_babe::block_import(
+		sc_consensus_babe::Config::get_or_compute(&*client)?,
+		grandpa_block_import,
+		client.clone(),
+	)?;
+
+	let inherent_data_providers = sp_inherents::InherentDataProviders::new();
+
+	let import_queue = sc_consensus_babe::import_queue(
+		babe_link,
+		babe_block_import,
+		None,
+		Some(Box::new(finality_proof_import)),
+		client.clone(),
+		select_chain.clone(),
+		inherent_data_providers.clone(),
+		&task_manager.spawn_handle(),
+		config.prometheus_registry(),
+		sp_consensus::NeverCanAuthor,
+	)?;
+
+	let finality_proof_provider =
+		GrandpaFinalityProofProvider::new_for_service(backend.clone(), client.clone());
+
+	let (network, network_status_sinks, system_rpc_tx, network_starter) =
+		sc_service::build_network(sc_service::BuildNetworkParams {
+			config: &config,
+			client: client.clone(),
+			transaction_pool: transaction_pool.clone(),
+			spawn_handle: task_manager.spawn_handle(),
+			import_queue,
+			on_demand: Some(on_demand.clone()),
+			block_announce_validator_builder: None,
+			finality_proof_request_builder: Some(finality_proof_request_builder),
+			finality_proof_provider: Some(finality_proof_provider),
+		})?;
+	network_starter.start_network();
+
+	if config.offchain_worker.enabled {
+		sc_service::build_offchain_workers(
+			&config, backend.clone(), task_manager.spawn_handle(), client.clone(), network.clone(),
+		);
 	}
 
-	if is_authority {
-		let proposer =
-			sc_basic_authorship::ProposerFactory::new(
-				service.client(),
-				service.transaction_pool(),
-				service.prometheus_registry().as_ref(),
-			);
 
-		let authorship_future = sc_consensus_manual_seal::run_instant_seal(
-			Box::new(service.client()),
-			proposer,
-			service.client(),
-			service.transaction_pool().pool().clone(),
-			service
-				.select_chain()
-				.ok_or(ServiceError::SelectChainRequired)?,
-			inherent_data_providers,
-		);
-
-		service.spawn_essential_task("instant-seal", authorship_future);
-	};
-
-	Ok(service)
+	Ok((task_manager, client, network, transaction_pool))
 }
 
 /// Builds a new service for a light client.
-pub fn new_light(config: Configuration) -> Result<impl AbstractService, ServiceError> {
-	ServiceBuilder::new_light::<runtime::opaque::Block, runtime::RuntimeApi, Executor>(config)?
-		.with_select_chain(|_config, backend| Ok(LongestChain::new(backend.clone())))?
-		.with_transaction_pool(|builder| {
-			let fetcher = builder.fetcher()
-				.ok_or_else(|| "Trying to start light transaction pool without active fetcher")?;
-
-			let pool_api = sc_transaction_pool::LightChainApi::new(
-				builder.client().clone(),
-				fetcher.clone(),
-			);
-			let pool = sc_transaction_pool::BasicPool::with_revalidation_type(
-				builder.config().transaction_pool.clone(),
-				Arc::new(pool_api),
-				builder.prometheus_registry(),
-				sc_transaction_pool::RevalidationType::Light,
-			);
-			Ok(pool)
-		})?
-		.with_import_queue_and_fprb(
-			|_config,
-			 client,
-			 _backend,
-			 _fetcher,
-			 _select_chain,
-			 _tx_pool,
-			 spawn_task_handle,
-			 registry| {
-				let finality_proof_request_builder =
-					Box::new(DummyFinalityProofRequestBuilder::default()) as Box<_>;
-
-				let import_queue = sc_consensus_manual_seal::import_queue(
-					Box::new(client),
-					spawn_task_handle,
-					registry,
-				);
-
-				Ok((import_queue, finality_proof_request_builder))
-			},
-		)?
-		.with_finality_proof_provider(|_client, _backend| Ok(Arc::new(()) as _))?
-		.build_light()
+pub fn new_light(config: Configuration) -> Result<TaskManager, ServiceError> {
+	new_light_base(config).map(|(task_manager, _, _, _, _)| {
+		task_manager
+	})
 }

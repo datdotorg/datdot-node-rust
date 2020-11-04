@@ -92,7 +92,8 @@ pub trait Trait: system::Trait{
 	/// The Scheduler.
 
 	type Proposal: Parameter + Dispatchable<Origin=Self::Origin> + From<Call<Self>>;
-	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal, RawOrigin<Self::AccountId>>;
+	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal, Self::PalletsOrigin>;
+	type PalletsOrigin: From<RawOrigin<Self::AccountId>>;
 
 	/// Type used for expressing timestamp.
 	type Moment: Parameter + Default + AtLeast32Bit
@@ -165,7 +166,19 @@ decl_event!(
 	}
 );
 
-type RoleValue = Option<u32>;
+decl_error! {
+	pub enum DatDotError for Module<T: Trait> {
+		/// Incorrect permissions
+		PermissionError,
+		/// Missing Plan
+		MissingPlan,
+		/// Missing Contract
+		MissingContract,
+		/// Missing Challenge
+		MissingChallenge
+	}
+}
+
 type ChunkIndex = u64;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -260,7 +273,8 @@ struct Contract<T: Trait> {
 	id: T::ContractId,
 	plan: T::PlanId,
 	ranges: Ranges<ChunkIndex>,
-	providers: Option<Providers<T>>
+	providers: Option<Providers<T>>,
+	failed_hosters: Vec<T::UserId>
 }
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
 struct Providers<T: Trait> {
@@ -433,6 +447,7 @@ pub struct Schedule<Time> {
 #[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Form<Time> {
 	storage: u64,
+	capacity: u64,
 	idle_storage: u64,
 	from: Time,
 	until: Time,
@@ -500,6 +515,7 @@ decl_storage! {
 decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
 		fn deposit_event() = default;
+		type Error = DatDotError<T>;
 
 
 		const ChallengeDelay : <T as system::Trait>::BlockNumber = T::ChallengeDelay::get();
@@ -750,7 +766,7 @@ decl_module!{
 			let user = Self::load_user(user_address);
 			if let Some(mut contract) = <GetContractByID<T>>::get(contract_id){
 				if let Some(mut providers) = contract.providers {
-					ensure!(providers.hosters.contains(&user.id), "TODO permission error");
+					ensure!(providers.hosters.contains(&user.id), DatDotError::<T>::PermissionError);
 					if !providers.active_hosters.contains(&user.id) {
 						providers.active_hosters.push(user.id);
 					} else if providers.active_hosters.len() == providers.hosters.len() {
@@ -793,8 +809,8 @@ decl_module!{
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
 			if let Some(contract) = <GetContractByID<T>>::get(&contract_id){
-				let sponsor = <GetPlanByID<T>>::get(contract.plan).ok_or("TODO no plan")?.sponsor;
-				ensure!(sponsor == user.id, "TODO invalid challenge request");
+				let sponsor = <GetPlanByID<T>>::get(contract.plan).ok_or(DatDotError::<T>::MissingPlan)?.sponsor;
+				ensure!(sponsor == user.id, DatDotError::<T>::MissingChallenge);
 				let ranges = contract.ranges;
 				let random_chunks = Self::random_from_ranges(ranges);
 				let challenge_id = <GetNextChallengeID<T>>::get();
@@ -812,7 +828,7 @@ decl_module!{
 					Self::schedule_challenges(contract_id, hoster_id, plan, &[ChallengeType::StorageChallenge]);
 				}
 			} else {
-				fail!("TODO contract missing error");
+				fail!(DatDotError::<T>::MissingContract);
 			}
 		}
 
@@ -843,7 +859,7 @@ decl_module!{
 			let user = Self::load_user(user_address);
 			let mut success: bool = true;
 			if let Some(challenge) = <GetChallengeByID<T>>::get(&challenge_id){
-				ensure!(user.id == challenge.hoster, "TODO permission error");
+				ensure!(user.id == challenge.hoster, DatDotError::<T>::PermissionError);
 				for proof in proofs {
 					if Self::validate_proof(proof.clone(), challenge.clone()){
 						success = success && true;
@@ -857,7 +873,7 @@ decl_module!{
 					Self::deposit_event(RawEvent::ProofOfStorageFailed(challenge_id.clone()));
 				}
 			} else {
-				fail!("TODO challenge missing error");
+				fail!(DatDotError::<T>::MissingChallenge);
 			}
 		}
 
@@ -951,7 +967,8 @@ impl<T: Trait> Module<T> {
 							id: contract_id.clone(),
 							plan: plan.id,
 							ranges: set.to_vec(),
-							providers: None
+							providers: None,
+							failed_hosters: Vec::new()
 						};
 						<GetContractByID<T>>::insert(contract_id, draft_contract);
 						<GetNextContractID<T>>::put(contract_id.clone()+One::one());
@@ -1096,7 +1113,7 @@ impl<T: Trait> Module<T> {
 								DispatchTime::After(challenge_delay),
 								None,
 								254,
-								sponsor_origin.clone(),
+								sponsor_origin.clone().into(),
 								challenge_call.into()
 							);
 						}

@@ -1,6 +1,6 @@
 [package]
 name = "datdot-runtime"
-version = "2.0.0-rc4"
+version = "2.0.0"
 authors = ["datdot authors"]
 repository = 'https://github.com/playproject-io/datdot-substrate'
 edition = "2018"
@@ -9,51 +9,65 @@ description = "A super-minimal runtime to demonstrate pallet-datdot, based on ht
 
 [package.metadata.substrate]
 categories = []
-compatibility_version = "2.0.0-rc4"
+compatibility_version = "2.0.0"
 
 [dependencies]
-serde = { version = "1.0", optional = true, features = ["derive"] }
-parity-scale-codec = { version = "1.3.1", features = ["derive"], default-features = false }
+serde = { version = "1.0.102", optional = true, features = ["derive"] }
+parity-scale-codec = { version = "1.3.4", features = ["derive"], default-features = false }
 smallvec = "1.4"
+static_assertions = "1.1.0"
+hex-literal = { version = "0.3.1", optional = true }
 
-frame-executive = { version = '2.0.0-rc4', default-features = false }
-frame-support = { version = '2.0.0-rc4', default-features = false }
-frame-system = { version = '2.0.0-rc4', default-features = false }
-sp-api = { version = '2.0.0-rc4', default-features = false }
-sp-block-builder = { version = '2.0.0-rc4', default-features = false }
-sp-core = { version = '2.0.0-rc4', default-features = false }
-sp-inherents = { version = '2.0.0-rc4', default-features = false }
-sp-io = { version = '2.0.0-rc4', default-features = false }
-sp-offchain = { version = '2.0.0-rc4', default-features = false }
-sp-runtime = { version = '2.0.0-rc4', default-features = false }
-sp-session = { version = '2.0.0-rc4', default-features = false }
-sp-std = { version = '2.0.0-rc4', default-features = false }
-sp-transaction-pool = { version = '2.0.0-rc4', default-features = false }
-sp-version = { version = '2.0.0-rc4', default-features = false }
+frame-executive = { version = '2.0.0', default-features = false }
+frame-support = { version = '2.0.0', default-features = false }
+frame-system = { version = '2.0.0', default-features = false }
+frame-system-benchmarking = { version = "2.0.0", default-features = false, optional = true }
+frame-benchmarking = { version = "2.0.0", default-features = false, optional = true }
+sp-api = { version = '2.0.0', default-features = false }
+sp-block-builder = { version = '2.0.0', default-features = false }
+sp-core = { version = '2.0.0', default-features = false }
+sp-inherents = { version = '2.0.0', default-features = false }
+sp-io = { version = '2.0.0', default-features = false }
+sp-offchain = { version = '2.0.0', default-features = false }
+sp-runtime = { version = '2.0.0', default-features = false }
+sp-session = { version = '2.0.0', default-features = false }
+sp-std = { version = '2.0.0', default-features = false }
+sp-transaction-pool = { version = '2.0.0', default-features = false }
+sp-version = { version = '2.0.0', default-features = false }
+sp-authority-discovery = { version = "2.0.0", default-features = false }
+sp-consensus-babe = { version = "0.8.0", default-features = false }
+sp-finality-grandpa = { version = "2.0.0", default-features = false }
 
-balances = { package = 'pallet-balances', version = '2.0.0-rc4', default-features = false }
-generic-asset = { package = 'pallet-generic-asset', version = '2.0.0-rc4', default-features = false }
-randomness-collective-flip = { package = 'pallet-randomness-collective-flip', version = '2.0.0-rc4', default-features = false }
-timestamp = { package = 'pallet-timestamp', version = '2.0.0-rc4', default-features = false }
-sudo = { package = 'pallet-sudo', version = '2.0.0-rc4', default-features = false }
-scheduler = { package = 'pallet-scheduler', version = '2.0.0-rc4', default-features = false }
-dat-verify = { package = 'pallet-datdot', version = '2.0.0-rc4', default-features = false, path = "../pallets/datdot" }
+
+pallet-balances = { package = 'pallet-balances', version = '2.0.0', default-features = false }
+pallet-randomness-collective-flip = { package = 'pallet-randomness-collective-flip', version = '2.0.0', default-features = false }
+pallet-timestamp = { package = 'pallet-timestamp', version = '2.0.0', default-features = false }
+pallet-sudo = { package = 'pallet-sudo', version = '2.0.0', default-features = false }
+pallet-scheduler = { package = 'pallet-scheduler', version = '2.0.0', default-features = false }
+pallet-dat-verify = { package = 'pallet-datdot', version = '2.0.0', default-features = false, path = "../pallets/datdot" }
+pallet-im-online = { package = 'pallet-im-online', version = "2.0.0", default-features = false }
+pallet-babe = { package = 'pallet-babe', version = "2.0.0", default-features = false }
+pallet-grandpa = { package = 'pallet-grandpa', version = "2.0.0", default-features = false }
+pallet-offences = { package = 'pallet-offences', version = "2.0.0", default-features = false }
+pallet-session = { version = "2.0.0", default-features = false }
+pallet-session-benchmarking = { version = "2.0.0", default-features = false, optional = true }
+pallet-offences-benchmarking = { version = "2.0.0", default-features = false, optional = true }
+pallet-authority-discovery = { package = "pallet-authority-discovery", version = "2.0.0"}
 
 
 [build-dependencies]
-wasm-builder-runner = { package = "substrate-wasm-builder-runner", version = "1.0.6" }
+wasm-builder-runner = { package = "substrate-wasm-builder-runner", version = "2.0.0" }
 
 [features]
 default = ["std"]
 std = [
-	"balances/std",
+	"pallet-balances/std",
 	"sp-block-builder/std",
 	"frame-executive/std",
-	"generic-asset/std",
 	"sp-inherents/std",
 	"sp-offchain/std",
 	"parity-scale-codec/std",
-	"randomness-collective-flip/std",
+	"pallet-randomness-collective-flip/std",
 	"sp-std/std",
 	"sp-io/std",
 	"serde",
@@ -61,12 +75,36 @@ std = [
 	"sp-core/std",
 	"sp-runtime/std",
 	"sp-session/std",
-	"sudo/std",
+	"pallet-sudo/std",
 	"frame-support/std",
 	"frame-system/std",
-	"timestamp/std",
+	"pallet-timestamp/std",
 	"sp-version/std",
 	"sp-transaction-pool/std",
-	"scheduler/std",
-	"dat-verify/std",
+	"pallet-scheduler/std",
+	"pallet-dat-verify/std",
+	"pallet-im-online/std",
+	"pallet-babe/std",
+	"pallet-grandpa/std",
+	"pallet-offences/std",
+	"pallet-session/std",
+	"pallet-authority-discovery/std",
+	"sp-authority-discovery/std",
+	"sp-consensus-babe/std",
+]
+
+runtime-benchmarks = [
+	"frame-benchmarking",
+	"frame-support/runtime-benchmarks",
+	"frame-system/runtime-benchmarks",
+	"sp-runtime/runtime-benchmarks",
+	"pallet-babe/runtime-benchmarks",
+	"pallet-balances/runtime-benchmarks",
+	"pallet-grandpa/runtime-benchmarks",
+	"pallet-im-online/runtime-benchmarks",
+	"pallet-timestamp/runtime-benchmarks",
+	"pallet-offences-benchmarking",
+	"pallet-session-benchmarking",
+	"frame-system-benchmarking",
+	"hex-literal",
 ]
