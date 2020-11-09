@@ -128,6 +128,7 @@ pub trait Trait: system::Trait{
 	type ContractActivationCap: Get<u8>;
 	type EncodersPerContract: Get<u8>;
 	type HostersPerContract: Get<u8>;
+	type AttestorsPerContract: Get<u8>;
 }
 
 
@@ -280,8 +281,9 @@ struct Contract<T: Trait> {
 struct Providers<T: Trait> {
 	encoders: Vec<T::UserId>,
 	hosters: Vec<T::UserId>,
+	attestors: Vec<T::UserId>,
 	active_hosters: Vec<T::UserId>,
-	attestor: T::UserId
+	failed_hosters: Vec<T::UserId>
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
@@ -776,7 +778,7 @@ decl_module!{
 					}
 					contract.providers = Some(providers.clone());
 					<GetContractByID<T>>::insert(contract_id, contract.clone());
-					Self::give_attestors_jobs(&[providers.attestor], &mut []);
+					Self::give_attestors_jobs(providers.attestors.as_slice(), &mut []);
 					Self::start_challenges(contract_id, user.id);
 					Self::deposit_event(RawEvent::HostingStarted(contract_id));
 				} else {
@@ -1037,6 +1039,29 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn get_providers(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Option<Providers<T>> {
+		let mut avoid = Self::make_avoid(plan);
+		let attestors = Self::select(Role::IdleAttestor, T::AttestorsPerContract::get().into(), |(x,_)|{!avoid.contains(x)});
+		avoid.append(&mut attestors.clone());
+		if attestors.len() < T::AttestorsPerContract::get() as usize { return None } else {
+			let hosters = Self::select(Role::IdleHoster, T::HostersPerContract::get().into(), |(x,_)|{!avoid.contains(x)});
+			avoid.append(&mut hosters.clone());
+			if hosters.len() < T::HostersPerContract::get() as usize { return None } else {
+				let encoders = Self::select(Role::IdleEncoder, T::EncodersPerContract::get().into(), |(x,_)|{!avoid.contains(x)});
+				avoid.append(&mut encoders.clone());
+				if encoders.len() < T::EncodersPerContract::get() as usize { return None } else {
+					Some(Providers::<T> {
+						encoders: encoders,
+						hosters: hosters,
+						active_hosters: Vec::new(),
+						failed_hosters: Vec::new(),
+						attestors: attestors
+					})
+				}
+			}
+		}
+	}
+
+	fn make_avoid(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Vec<T::UserId>{
 		let mut avoid = Vec::new();
 		avoid.push(plan.sponsor);
 		for feed_struct in plan.feeds {
@@ -1044,31 +1069,15 @@ impl<T: Trait> Module<T> {
 				avoid.push(feed.publisher.clone());
 			}
 		}
-		let attestor_option = <Roles<T>>::iter_prefix(Role::IdleAttestor).skip_while(|(item, _)|
-			avoid.contains(item)
-		).next();
-		if let Some((attestor, _)) = attestor_option {
-			let hosters: Vec<T::UserId> = <Roles<T>>::iter_prefix(Role::IdleHoster)
-				.take_while(|(x,_)|{!avoid.contains(x)})
-				.map(|(x, _)|x)
-				.collect();
-			if hosters.len() < T::HostersPerContract::get() as usize { return None } else {
-				let encoders: Vec<T::UserId> = <Roles<T>>::iter_prefix(Role::IdleEncoder)
-					.take_while(|(x,_)|{!avoid.contains(x)})
-					.map(|(x, _)|x)
-					.collect();
-				if encoders.len() < T::EncodersPerContract::get() as usize { return None } else {
-					Some(Providers::<T> {
-						encoders: encoders,
-						hosters: hosters,
-						active_hosters: Vec::new(),
-						attestor: attestor
-					})
-				}
-			}
-		} else {
-			None
-		}
+		avoid
+	}
+
+	fn select(select_role: Role, select_amount: usize, select_function: impl Fn((&T::UserId, &())) -> bool) -> Vec<T::UserId>{
+		<Roles<T>>::iter_prefix(select_role)
+			.filter(|(x, y)|{select_function((x, y))})
+			.take(select_amount)
+			.map(|(x, _)|x)
+			.collect()
 	}
 
 	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){

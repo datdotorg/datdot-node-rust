@@ -48,6 +48,10 @@ pub fn local_testnet_config() -> ChainSpec {
 					account_id_from_seed::<sr25519::Pair>("Eve//stash"),
 					account_id_from_seed::<sr25519::Pair>("Ferdie//stash"),
 				],
+				vec![
+					authority_keys_from_seed("Alice"),
+					authority_keys_from_seed("Bob"),
+				],
 			)
 		},
 		vec![],

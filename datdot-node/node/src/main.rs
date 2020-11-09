@@ -4,21 +4,12 @@
 #![warn(unused_extern_crates)]
 
 pub mod chain_spec;
-
-#[macro_use]
 mod service;
-#[cfg(feature = "browser")]
-mod browser;
-#[cfg(feature = "cli")]
 mod cli;
-#[cfg(feature = "cli")]
 mod command;
+mod rpc;
 
-#[cfg(feature = "browser")]
-pub use browser::*;
-#[cfg(feature = "cli")]
 pub use cli::*;
-#[cfg(feature = "cli")]
 pub use command::*;
 
 fn main() -> sc_cli::Result<()> {

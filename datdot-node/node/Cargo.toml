@@ -14,25 +14,29 @@ name = "datdot-node"
 path = "src/main.rs"
 
 [dependencies]
+jsonrpc-core = '15.0.0'
 derive_more = "0.15.0"
-futures = "0.3.5"
-structopt =  { version =  "0.3.15", optional = true }
+futures = "0.3.7"
+structopt =  { version =  "0.3.20", optional = true }
 futures01 = { package = "futures", version = "0.1.29" }
-ctrlc = { version = "3.1.4", features = ["termination"] }
-log = "0.4.8"
+ctrlc = { version = "3.1.7", features = ["termination"] }
+log = "0.4.11"
 tokio = "0.1.22"
 exit-future = "0.2.0"
 parking_lot = "0.9.0"
 trie-root = "0.15.2"
+sc-rpc = "2.0.0"
 sc-basic-authorship = "0.8.0"
 sc-cli = { version = "0.8.0", optional = true }
 sc-client-api = "2.0.0"
 sc-consensus = "0.8.0"
-sc-consensus-babe = "0.8.0"
+sc-consensus-aura = "0.8.0"
+sp-consensus-aura = "0.8.0"
 sc-finality-grandpa = "0.8.0"
+sc-authority-discovery = "0.8.0"
 sc-executor = "0.8.0"
 sc-network = "0.8.0"
-sc-service = "0.8.0"
+sc-service = { version = "0.8.0", default-features = false }
 sc-transaction-pool = "2.0.0"
 sp-consensus = "0.8.0"
 sp-core = "2.0.0"
@@ -41,11 +45,16 @@ sp-io = "2.0.0"
 sp-runtime = "2.0.0"
 sp-timestamp = "2.0.0"
 sp-transaction-pool = "2.0.0"
+sp-api = "2.0.0"
+sp-blockchain = "2.0.0"
+sp-block-builder = "2.0.0"
+sc-rpc-api = "0.8.0"
+substrate-frame-rpc-system = "2.0.0"
 frame-benchmarking = "2.0.0"
 frame-benchmarking-cli = { version = "2.0.0", optional = true }
 
-wasm-bindgen = { version = "0.2.57", optional = true }
-wasm-bindgen-futures = { version = "0.4.7", optional = true }
+wasm-bindgen = { version = "0.2.68", optional = true }
+wasm-bindgen-futures = { version = "0.4.18", optional = true }
 browser-utils = { package = "substrate-browser-utils", optional = true, version = "0.8.0"}
 
 # node-specific dependencies
@@ -77,7 +86,6 @@ browser = [
 cli = [
 	"sc-cli",
 	"frame-benchmarking-cli",
-	"sc-service/db",
 	"structopt",
 	"substrate-build-script-utils",
 ]

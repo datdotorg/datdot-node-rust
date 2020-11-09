@@ -1,11 +1,10 @@
-//! Weight Fee Runtime.
-//!
-//! This runtime demonstrates several ways to convert weights to fees and how to charge
-//! fees in various assets.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 // `construct_runtime!` does a lot of recursion and requires us to increase the limit to 256.
 #![recursion_limit = "512"]
+
+#![feature(trace_macros)]
+trace_macros!(true);
 
 // Make the WASM binary available.
 #[cfg(feature = "std")]
@@ -18,7 +17,7 @@ pub mod genesis;
 use frame_support::{
 	traits::Get,
 	weights::{
-		constants::{BlockExecutionWeight, ExtrinsicBaseWeight, RocksDbWeight, WEIGHT_PER_SECOND},
+		constants::{BlockExecutionWeight, ExtrinsicBaseWeight, ParityDbWeight, WEIGHT_PER_SECOND},
 		Weight,
 		WeightToFeePolynomial,
 		WeightToFeeCoefficient,
@@ -32,15 +31,27 @@ use frame_system::{
 };
 use smallvec::smallvec;
 use sp_api::impl_runtime_apis;
-use sp_core::{OpaqueMetadata, H256};
-use sp_runtime::traits::{
-	BlakeTwo256, Block as BlockT, IdentifyAccount, IdentityLookup, Saturating, Verify,
+use sp_core::{OpaqueMetadata, H256, crypto::KeyTypeId};
+use sp_runtime::{
+	impl_opaque_keys,
+	traits::{
+		BlakeTwo256, 
+		Block as BlockT, 
+		IdentifyAccount, 
+		IdentityLookup, 
+		Saturating, 
+		Verify, 
+		NumberFor
+	}
 };
 use sp_runtime::{
 	create_runtime_str, generic,
 	transaction_validity::{TransactionSource, TransactionValidity},
 	ApplyExtrinsicResult, MultiSignature,
 };
+use sp_consensus_aura::sr25519::AuthorityId as AuraId;
+use pallet_grandpa::{AuthorityId as GrandpaId, AuthorityList as GrandpaAuthorityList};
+use pallet_grandpa::fg_primitives;
 use sp_std::prelude::*;
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
@@ -51,7 +62,14 @@ use frame_support::weights::IdentityFee;
 
 // A few exports that help ease life for downstream crates.
 pub use pallet_balances::Call as BalancesCall;
-pub use frame_support::{construct_runtime, parameter_types, traits::Randomness, StorageValue};
+pub use frame_support::{
+	construct_runtime, 
+	parameter_types, 
+	traits::{
+		Randomness,
+		KeyOwnerProofSystem
+	}, 
+	StorageValue};
 #[cfg(any(feature = "std", test))]
 pub use sp_runtime::BuildStorage;
 pub use sp_runtime::{Perbill, Permill};
@@ -101,6 +119,13 @@ pub mod opaque {
 	pub type Block = generic::Block<Header, UncheckedExtrinsic>;
 	/// Opaque block identifier type.
 	pub type BlockId = generic::BlockId<Block>;
+
+	impl_opaque_keys! {
+		pub struct SessionKeys {
+			pub aura: Aura,
+			pub grandpa: Grandpa,
+		}
+	}
 }
 
 /// This runtime version.
@@ -159,7 +184,7 @@ impl system::Trait for Runtime {
 	/// Maximum weight of each block. With a default weight system of 1byte == 1weight, 4mb is ok.
 	type MaximumBlockWeight = MaximumBlockWeight;
 	/// The weight of database operations that the runtime can invoke.
-	type DbWeight = RocksDbWeight;
+	type DbWeight = ParityDbWeight;
 	/// The weight of the overhead invoked on the block import process, independent of the
 	/// extrinsics included in that block.
 	type BlockExecutionWeight = BlockExecutionWeight;
@@ -181,7 +206,7 @@ impl system::Trait for Runtime {
 	/// What to do if an account is fully reaped from the system.
 	type OnKilledAccount = ();
 	/// The data to be stored in an account.
-	type AccountData = balances::AccountData<Balance>;
+	type AccountData = pallet_balances::AccountData<Balance>;
 	type BaseCallFilter = ();
 
 	type PalletInfo = PalletInfo;
@@ -219,7 +244,31 @@ impl pallet_balances::Trait for Runtime {
 	type MaxLocks = MaxLocks;
 }
 
-impl sudo::Trait for Runtime {
+
+impl pallet_aura::Trait for Runtime {
+	type AuthorityId = AuraId;
+}
+
+impl pallet_grandpa::Trait for Runtime {
+	type Event = Event;
+	type Call = Call;
+
+	type KeyOwnerProofSystem = ();
+
+	type KeyOwnerProof =
+		<Self::KeyOwnerProofSystem as KeyOwnerProofSystem<(KeyTypeId, GrandpaId)>>::Proof;
+
+	type KeyOwnerIdentification = <Self::KeyOwnerProofSystem as KeyOwnerProofSystem<(
+		KeyTypeId,
+		GrandpaId,
+	)>>::IdentificationTuple;
+
+	type HandleEquivocation = ();
+
+	type WeightInfo = ();
+}
+
+impl pallet_sudo::Trait for Runtime {
 	type Event = Event;
 	type Call = Call;
 }
@@ -283,11 +332,13 @@ construct_runtime!(
 	{
 		System: system::{Module, Call, Storage, Config, Event<T>},
 		Timestamp: pallet_timestamp::{Module, Call, Storage, Inherent},
-		Balances: pallet_balances::{Module, Call, Storage, Config<T>, Event<T>},
+		Balances: pallet_balances::{Module, Call, Storage, Event<T>},
 		RandomnessCollectiveFlip: pallet_randomness_collective_flip::{Module, Call, Storage},
 		Sudo: pallet_sudo::{Module, Call, Config<T>, Storage, Event<T>},
 		Scheduler: pallet_scheduler::{Module, Call, Storage, Event<T>},
 		DatVerify: pallet_dat_verify::{Module, Call, Storage, Event<T>},
+		Aura: pallet_aura::{Module, Config<T>, Inherent},
+		Grandpa: pallet_grandpa::{Module, Call, Storage, Config, Event},
 	}
 );
 
@@ -389,4 +440,50 @@ impl_runtime_apis! {
 			None
 		}
 	}
+
+	impl sp_consensus_aura::AuraApi<Block, AuraId> for Runtime {
+		fn slot_duration() -> u64 {
+			Aura::slot_duration()
+		}
+
+		fn authorities() -> Vec<AuraId> {
+			//TODO -- hack this lol
+			Aura::authorities()
+		}
+	}
+
+	impl fg_primitives::GrandpaApi<Block> for Runtime {
+		fn grandpa_authorities() -> GrandpaAuthorityList {
+			// TODO hack this lol
+			Grandpa::grandpa_authorities()
+		}
+
+		fn submit_report_equivocation_unsigned_extrinsic(
+			_equivocation_proof: fg_primitives::EquivocationProof<
+				<Block as BlockT>::Hash,
+				NumberFor<Block>,
+			>,
+			_key_owner_proof: fg_primitives::OpaqueKeyOwnershipProof,
+		) -> Option<()> {
+			None
+		}
+
+		fn generate_key_ownership_proof(
+			_set_id: fg_primitives::SetId,
+			_authority_id: GrandpaId,
+		) -> Option<fg_primitives::OpaqueKeyOwnershipProof> {
+			// NOTE: this is the only implementation possible since we've
+			// defined our key owner proof type as a bottom type (i.e. a type
+			// with no values).
+			None
+		}
+	}
+
+	impl frame_system_rpc_runtime_api::AccountNonceApi<Block, AccountId, Index> for Runtime {
+		fn account_nonce(account: AccountId) -> Index {
+			System::account_nonce(account)
+		}
+	}
+
+
 }
