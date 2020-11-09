@@ -1039,14 +1039,20 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn get_providers(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Option<Providers<T>> {
-		let mut avoid = Self::make_avoid(plan);
-		let attestors = Self::select(Role::IdleAttestor, T::AttestorsPerContract::get().into(), |(x,_)|{!avoid.contains(x)});
+		let mut avoid = Self::make_avoid(&plan);
+		let attestors = Self::select(Role::IdleAttestor, T::AttestorsPerContract::get().into(), |(x,_)|{
+			(!avoid.contains(x)) && Self::qualifyAttestor(&plan, x)
+		});
 		avoid.append(&mut attestors.clone());
 		if attestors.len() < T::AttestorsPerContract::get() as usize { return None } else {
-			let hosters = Self::select(Role::IdleHoster, T::HostersPerContract::get().into(), |(x,_)|{!avoid.contains(x)});
+			let hosters = Self::select(Role::IdleHoster, T::HostersPerContract::get().into(), |(x,_)|{
+				(!avoid.contains(x)) && Self::qualifyHoster(&plan, x)
+			});
 			avoid.append(&mut hosters.clone());
 			if hosters.len() < T::HostersPerContract::get() as usize { return None } else {
-				let encoders = Self::select(Role::IdleEncoder, T::EncodersPerContract::get().into(), |(x,_)|{!avoid.contains(x)});
+				let encoders = Self::select(Role::IdleEncoder, T::EncodersPerContract::get().into(), |(x,_)|{
+					(!avoid.contains(x)) && Self::qualifyEncoder(&plan, x)
+				});
 				avoid.append(&mut encoders.clone());
 				if encoders.len() < T::EncodersPerContract::get() as usize { return None } else {
 					Some(Providers::<T> {
@@ -1061,10 +1067,31 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn make_avoid(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Vec<T::UserId>{
+	fn qualifyAttestor(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user: &T::UserId)->bool{
+		// from - until matches plan
+		// future: geolocation
+		true
+	}
+
+	fn qualifyEncoder(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user: &T::UserId)->bool{
+		// from - until matches plan
+		// storage capacity >= required capacity
+		// future: geolocation
+		true
+	}
+
+	fn qualifyHoster(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user: &T::UserId)->bool{
+		// from - until matches plan
+		// storage capacity >= required capacity
+		// future: geolocation
+		// future: schedule match
+		true
+	}
+
+	fn make_avoid(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Vec<T::UserId>{
 		let mut avoid = Vec::new();
 		avoid.push(plan.sponsor);
-		for feed_struct in plan.feeds {
+		for feed_struct in &plan.feeds {
 			if let Some(feed) = <GetFeedByID<T>>::get(feed_struct.id){
 				avoid.push(feed.publisher.clone());
 			}
