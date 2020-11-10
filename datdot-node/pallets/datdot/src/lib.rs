@@ -78,7 +78,7 @@ use sp_runtime::{
 };
 use sp_arithmetic::{
 	Percent,
-	traits::{BaseArithmetic, One}
+	traits::{BaseArithmetic, One, Zero}
 };
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
@@ -1067,25 +1067,72 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn qualifyAttestor(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user: &T::UserId)->bool{
-		// from - until matches plan
+	fn qualifyAttestor(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user_id: &T::UserId)->bool{
+		if let Some(user) = <GetUserByID<T>>::get(user_id){
+			if let Some(form) = user.attestor_form {
+				Self::is_idle_now(form)
+			} else {
+				false
+			}
+		} else {
+			false
+		}
+		
+		// from - until matches curremt time
 		// future: geolocation
-		true
 	}
 
-	fn qualifyEncoder(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user: &T::UserId)->bool{
-		// from - until matches plan
-		// storage capacity >= required capacity
+	fn qualifyEncoder(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user_id: &T::UserId)->bool{
+		if let Some(user) = <GetUserByID<T>>::get(user_id){
+			if let Some(form) = user.encoder_form {
+				if Self::is_idle_now(form) {
+					//Self::contract_storage_check(form);
+					//currently encoders do not register storage
+					true
+				} else {
+					false
+				}
+			} else {
+				false
+			}
+		} else {
+			false
+		}
+		// from - until matches current time
 		// future: geolocation
-		true
 	}
 
-	fn qualifyHoster(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user: &T::UserId)->bool{
-		// from - until matches plan
-		// storage capacity >= required capacity
+	fn qualifyHoster(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user_id: &T::UserId)->bool{
+		if let Some(user) = <GetUserByID<T>>::get(user_id){
+			if let Some(form) = user.hoster_form {
+				if let Some(plan_until_time) = plan.until.time {
+					if form.from <= plan.from && form.until >= plan_until_time {
+						Self::contract_storage_check(form)
+					} else {
+						false
+					}
+				} else {
+					// check other plan.until fields
+					true
+				}
+			} else {
+				false
+			}
+		} else {
+			false
+		}
 		// future: geolocation
 		// future: schedule match
-		true
+	}
+
+	fn contract_storage_check(form: Form<T::Moment>) -> bool {
+		let storage_used = T::ContractSetSize::get()*65536;
+		storage_used <= form.storage
+	}
+
+	fn is_idle_now(form: Form<T::Moment>) -> bool {
+		// comparision without comparison operator because I have Scale trait - maybe I should just add comparison trait?
+		form.from.div(<system::Module<T>>::block_number().into()) == Zero::zero() && form.until.div(<system::Module<T>>::block_number().into()) >= One::one()
 	}
 
 	fn make_avoid(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Vec<T::UserId>{
