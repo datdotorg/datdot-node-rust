@@ -1,5 +1,4 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-
 /******************************************************************************
   A runtime module template with necessary imports
 ******************************************************************************/
@@ -7,8 +6,10 @@
 use sp_std::prelude::*;
 use sp_std::fmt::Debug;
 use sp_std::collections::btree_map::BTreeMap;
+use sp_std::collections::btree_set::BTreeSet;
 use sp_std::iter::ExactSizeIterator;
 use sp_std::iter::Take;
+use sp_std::cmp::Ordering;
 use frame_support::{
 	decl_module,
 	decl_storage,
@@ -83,21 +84,18 @@ use sp_arithmetic::{
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
 
+type IdType = u32;
 /******************************************************************************
   The module's configuration trait
 ******************************************************************************/
 pub trait Trait: system::Trait{
-	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
+	type Event: From<Event> + Into<<Self as system::Trait>::Event>;
 	
 	/// The Scheduler.
 
 	type Proposal: Parameter + Dispatchable<Origin=Self::Origin> + From<Call<Self>>;
 	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal, Self::PalletsOrigin>;
 	type PalletsOrigin: From<RawOrigin<Self::AccountId>>;
-
-	/// Type used for expressing timestamp.
-	type Moment: Parameter + Default + AtLeast32Bit
-		+ Scale<Self::BlockNumber, Output = Self::Moment> + Copy;
 
 	/// The currency trait.
 	type Currency: LockableCurrency<Self::AccountId>;
@@ -106,24 +104,13 @@ pub trait Trait: system::Trait{
 	Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + SimpleBitOps
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
-	//ID TYPES---
-	type FeedId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
-	type UserId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
-	type ContractId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
-	type ChallengeId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
-	type PlanId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
-	type PerformanceChallengeId: Parameter + Member + AtLeast32Bit + BaseArithmetic + EncodeLike<u32> + Codec + Default + Copy +
-	MaybeSerializeDeserialize + Debug;
 	// ---
 
 	//CONSTS
 	type PerformanceAttestorCount: Get<u8>;
 	type ChallengeDelay: Get<<Self as system::Trait>::BlockNumber>;
+	type EncodingDuration: Get<<Self as system::Trait>::BlockNumber>;
+	type AttestingDuration: Get<<Self as system::Trait>::BlockNumber>;
 	type ContractSetSize: Get<u64>;
 	type ContractActivationCap: Get<u8>;
 	type EncodersPerContract: Get<u8>;
@@ -136,34 +123,30 @@ pub trait Trait: system::Trait{
   Events
 ******************************************************************************/
 decl_event!(
-	pub enum Event<T> where
-	<T as Trait>::FeedId,
-	<T as Trait>::ContractId,
-	<T as Trait>::PlanId,
-	<T as Trait>::ChallengeId,
-	<T as Trait>::PerformanceChallengeId
-	{
+	pub enum Event {
 		/// New data feed registered
-		NewFeed(FeedId),
+		NewFeed(IdType),
 		/// New hosting plan by publisher for selected feed (many possible plans per feed)
-		NewPlan(PlanId),
+		NewPlan(IdType),
 		/// A new contract between publisher, encoder, and hoster (many contracts per plan)
 		/// (Encoder, Hoster,...)
-		NewContract(ContractId),
+		NewContract(IdType),
 		/// Hosting contract started
-		HostingStarted(ContractId),
+		HostingStarted(IdType),
 		/// New proof-of-storage challenge
-		NewStorageChallenge(ChallengeId),
+		NewStorageChallenge(IdType),
 		/// Proof-of-storage confirmed
-		ProofOfStorageConfirmed(ChallengeId),
+		ProofOfStorageConfirmed(IdType),
 		/// Proof-of-storage not confirmed
-		ProofOfStorageFailed(ChallengeId),
+		ProofOfStorageFailed(IdType),
 		/// PerformanceChallenge of retrievability requested
-		NewPerformanceChallenge(PerformanceChallengeId),
+		NewPerformanceChallenge(IdType),
 		/// Proof of retrievability confirmed
-		AttestationReportConfirmed(PerformanceChallengeId),
+		AttestationReportConfirmed(IdType),
 		/// Data serving not verified
-		AttestationReportFailed(PerformanceChallengeId),
+		AttestationReportFailed(IdType),
+		/// New Amendment created
+		NewAmendment(IdType),
 	}
 );
 
@@ -194,26 +177,43 @@ enum Role {
 
 type NoiseKey = Public;
 
+#[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub struct Form<Time> {
+	storage: u64,
+	idle_storage: u64,
+	capacity: u64,
+	from: Time,
+	until: Option<Time>,
+	schedules: Vec<Schedule<Time>>,
+	config: Config,
+}
+
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct User<UserId, AccountId, Time> {
-	id: UserId,
+struct ProviderRoleData<Time> {
+	key: NoiseKey,
+	form: Form<Time>,
+	capacity: u64,
+	idle_storage: u64,
+	jobs: BTreeSet<JobId>
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
+struct User<AccountId, Time> {
+	id: IdType,
 	address: AccountId,
-	attestor_key: Option<NoiseKey>,
-	encoder_key: Option<NoiseKey>,
-	hoster_key: Option<NoiseKey>,
-	attestor_form: Option<Form<Time>>,
-	encoder_form: Option<Form<Time>>,
-	hoster_form: Option<Form<Time>>
+	hoster: Option<ProviderRoleData<Time>>,
+	encoder: Option<ProviderRoleData<Time>>,
+	attestor: Option<ProviderRoleData<Time>>
 }
 
 type FeedKey = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct Feed<T: Trait> {
-	id: T::FeedId,
+struct Feed {
+	id: IdType,
 	publickey: FeedKey,
 	meta: TreeRoot,
-	publisher: T::UserId
+	publisher: IdType
 }
 
 type Ranges<C> = Vec<(C, C)>;
@@ -247,52 +247,79 @@ pub struct PlanUntil<Time> {
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-pub struct FeedInPlan<A, B>{
-	id: A,
+pub struct FeedInPlan<B>{
+	id: IdType,
 	ranges: B
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-pub struct Plan<PlanId, FeedId, Time, UserId, ContractId> {
-	id: PlanId,
-	feeds: Vec<FeedInPlan<FeedId, Ranges<u64>>>,
+pub struct Plan<Time> {
+	id: IdType,
+	feeds: Vec<FeedInPlan<Ranges<u64>>>,
 	from: Time,
 	until: PlanUntil<Time>,
 	importance: u8,
 	config: Config,
 	schedules: Vec<Schedule<Time>>,
-	sponsor: UserId,
-	contracts: Vec<ContractId>
+	sponsor: IdType,
+	contracts: Vec<IdType>
 }
 
 struct Expirable<Item, Time> {
 	inner: Item,
 	expires: Time
 }
+
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct Contract<T: Trait> {
-	id: T::ContractId,
-	plan: T::PlanId,
-	ranges: Ranges<ChunkIndex>,
-	providers: Option<Providers<T>>,
-	failed_hosters: Vec<T::UserId>
+struct Amendment {
+	id: IdType,
+	contract: IdType,
+	providers: Providers
 }
+
+/*
+impl Ord for Amendment {
+	fn cmp(&self, other: &Self) -> Ordering {
+		let other_sum = 
+			other.providers.hosters.len() +
+			other.providers.encoders.len() +
+			other.providers.attestors.len();
+
+		let self_sum = 
+			self.providers.hosters.len() +
+			self.providers.encoders.len() +
+			self.providers.attestors.len();
+
+		other_sum.cmp(self_sum)
+	}
+}
+*/
+
+
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct Providers<T: Trait> {
-	encoders: Vec<T::UserId>,
-	hosters: Vec<T::UserId>,
-	attestors: Vec<T::UserId>,
-	active_hosters: Vec<T::UserId>,
-	failed_hosters: Vec<T::UserId>
+struct Contract {
+	id: IdType,
+	plan: IdType,
+	feed: IdType,
+	ranges: Ranges<ChunkIndex>,
+	amendments: Vec<IdType>,
+	active_hosters: Vec<IdType>
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct StorageChallenge<T: Trait> {
-	id: T::ChallengeId,
-	contract: T::ContractId,
-	hoster: T::UserId,
+struct Providers {
+	encoders: Vec<IdType>,
+	hosters: Vec<IdType>,
+	attestors: Vec<IdType>
+}
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
+struct StorageChallenge {
+	id: IdType,
+	contract: IdType,
+	hoster: IdType,
 	chunks: Vec<ChunkIndex>,
-	attestor: Option<T::UserId>
+	attestor: Option<IdType>
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -410,11 +437,11 @@ impl Node {
 pub type Proof = Public;
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-struct PerformanceChallenge<T: Trait> {
-	id: T::PerformanceChallengeId,
-	attestors: Option<Vec<T::UserId>>,
-	contract: T::ContractId,
-	hoster: T::UserId
+struct PerformanceChallenge {
+	id: IdType,
+	attestors: Option<Vec<IdType>>,
+	contract: IdType,
+	hoster: IdType
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -422,6 +449,7 @@ pub struct Report {
 	location: u8,
 	latency: Option<u8>
 }
+
 #[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Performance {
 	availability: Percent,
@@ -446,22 +474,14 @@ pub struct Schedule<Time> {
 	config: Config
 }
 
-#[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-pub struct Form<Time> {
-	storage: u64,
-	capacity: u64,
-	idle_storage: u64,
-	from: Time,
-	until: Time,
-	schedules: Vec<Schedule<Time>>,
-	config: Config,
-}
-
 // (number of attestors required, job id)
-#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-pub enum AttestorJob<ChallengeId, PerformanceChallengeId> {
-	StorageChallenge(ChallengeId),
-	PerformanceChallenge(PerformanceChallengeId)
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug, PartialOrd, Ord)]
+pub enum JobId {
+	StorageChallenge(IdType),
+	PerformanceChallenge(IdType),
+	ContractAmendment(IdType),
+	HosterJob(IdType),
+	EncoderJob(IdType)
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
@@ -473,43 +493,36 @@ pub enum ChallengeType {
 /******************************************************************************
   Storage items/db
 ******************************************************************************/
-/* expected js storage queries
-const queries = {
-	getFeedByID,
-	getFeedByKey,
-	getUserByID,
-	getPlanByID,
-	getContractByID,
-	getStorageChallengeByID,
-	getPerformanceChallengeByID,
-}
-*/
+
 decl_storage! {
-	trait Store for Module<T: Trait> as DatVerify {
+	trait Store for Module<T: Trait> as DatVerify{
 		// PUBLIC/API
-		pub GetFeedByID: map hasher(twox_64_concat) T::FeedId => Option<Feed<T>>;
-		pub GetFeedByKey: map hasher(twox_64_concat) FeedKey => Option<Feed<T>>;
-        pub GetUserByID: map hasher(twox_64_concat) T::UserId => Option<User<T::UserId, T::AccountId, T::Moment>>;
-        pub GetContractByID: map hasher(twox_64_concat) T::ContractId => Option<Contract<T>>;
-        pub GetChallengeByID: map hasher(twox_64_concat) T::ChallengeId => Option<StorageChallenge<T>>;
-		pub GetPlanByID: map hasher(twox_64_concat) T::PlanId => Option<Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>>;
-		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) T::PerformanceChallengeId => Option<PerformanceChallenge<T>>;
+		pub GetFeedByID: map hasher(twox_64_concat) IdType => Option<Feed>;
+		pub GetFeedByKey: map hasher(twox_64_concat) FeedKey => Option<Feed>;
+        pub GetUserByID: map hasher(twox_64_concat) IdType => Option<User<T::AccountId, T::BlockNumber>>;
+		pub GetContractByID: map hasher(twox_64_concat) IdType => Option<Contract>;
+		pub GetAmendmentByID: map hasher(twox_64_concat) IdType => Option<Amendment>;
+        pub GetChallengeByID: map hasher(twox_64_concat) IdType => Option<StorageChallenge>;
+		pub GetPlanByID: map hasher(twox_64_concat) IdType => Option<Plan<T::BlockNumber>>;
+		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) IdType => Option<PerformanceChallenge>;
 		// INTERNALLY REQUIRED STORAGE
-		pub GetNextFeedID: T::FeedId;
-		pub GetNextUserID: T::UserId;
-		pub GetNextContractID: T::ContractId;
-		pub GetNextChallengeID: T::ChallengeId;
-		pub GetNextPlanID: T::PlanId;
-		pub GetNextAttestationID: T::PerformanceChallengeId;
+		pub GetNextFeedID: IdType;
+		pub GetNextUserID: IdType;
+		pub GetNextContractID: IdType;
+		pub GetNextAmendmentID: IdType;
+		pub GetNextChallengeID: IdType;
+		pub GetNextPlanID: IdType;
+		pub GetNextAttestationID: IdType;
 		pub Nonce: u64;
-		pub GetAttestorJobQueue: Vec<AttestorJob<T::ChallengeId, T::PerformanceChallengeId>>;
-		pub DraftContractsQueue: Vec<T::ContractId>;
+		pub GetJobIdQueue: Vec<JobId>;
+		pub PendingAmendments: Vec<IdType>;
 		// LOOKUPS (created as neccesary)
-		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::UserId, T::AccountId, T::Moment>>;
+		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::AccountId, T::BlockNumber>>;
 		// ROLES ARRAY
-		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) T::UserId => ();
+		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) IdType => ();
 	}
 }
+
 
 /******************************************************************************
   External functions (including on_finalize, on_initialize)
@@ -522,50 +535,18 @@ decl_module!{
 
 		const ChallengeDelay : <T as system::Trait>::BlockNumber = T::ChallengeDelay::get();
 		const PerformanceAttestorCount : u8 = T::PerformanceAttestorCount::get();
-		/*
-		if (type === 'publishFeed') _publishFeed(user, { name, nonce }, status, args)
-		else if (type === 'publishPlan') _publishPlan(user, { name, nonce }, status, args)
-		else if (type === 'registerEncoder') _registerEncoder(user, { name, nonce }, status, args)
-		else if (type === 'registerAttestor') _registerAttestor(user, { name, nonce }, status, args)
-		else if (type === 'registerHoster') _registerHoster(user, { name, nonce }, status, args)
-		else if (type === 'encodingDone') _encodingDone(user, { name, nonce }, status, args)
-		else if (type === 'hostingStarts') _hostingStarts(user, { name, nonce }, status, args)
-		else if (type === 'requestStorageChallenge') _requestStorageChallenge(user, { name, nonce }, status, args)
-		else if (type === 'requestPerformanceChallenge') _requestPerformanceChallenge(user, { name, nonce }, status, args)
-		else if (type === 'submitStorageChallenge') _submitStorageChallenge(user, { name, nonce }, status, args)
-		else if (type === 'submitPerformanceChallenge') _submitPerformanceChallenge(user, { name, nonce }, status, args)
-		// else if ... 
-		*/
-		
-		/*
-  		const [merkleRoot]  = args
-  		const [key, {hashType, children}, signature] = merkleRoot
-  		const keyBuf = Buffer.from(key, 'hex')
-  		// check if feed already exists
-  		if (DB.feedByKey[keyBuf.toString('hex')]) return
-  		const feed = { publickey: keyBuf.toString('hex'), meta: { signature, hashType, children } }
-  		const feedID = DB.feeds.push(feed)
-  		feed.id = feedID
-  		// push to feedByKey lookup array
-  		DB.feedByKey[keyBuf.toString('hex')] = feedID
-  		const userID = user.id
-  		feed.publisher = userID
-  		// Emit event
-  		const NewFeed = { event: { data: [feedID], method: 'FeedPublished' } }
-  		const event = [NewFeed]
-  		handlers.forEach(([name, handler]) => handler(event))
-		*/
+
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn publish_feed(origin, merkle_root: (Public, TreeHashPayload, H512)){
 			let publisher_address = ensure_signed(origin)?;
 			let user = Self::load_user(publisher_address);
-			if let Some(feed) = <GetFeedByKey<T>>::get(merkle_root.0){
+			if let Some(feed) = <GetFeedByKey>::get(merkle_root.0){
 				// if a feed is already published, emit error here.
 			} else {
-				let feed_id : T::FeedId;
-				let next_feed_id = <GetNextFeedID<T>>::get();
+				let feed_id : IdType;
+				let next_feed_id = <GetNextFeedID>::get();
 				//TODO feed.ranges from?
-				let new_feed = Feed::<T> {
+				let new_feed = Feed {
 					id: next_feed_id.clone(),
 					publickey: merkle_root.0,
 					meta: TreeRoot {
@@ -575,136 +556,107 @@ decl_module!{
 					},
 					publisher: user.id
 				};
-				<GetFeedByID<T>>::insert(next_feed_id, new_feed.clone());
-				<GetFeedByKey<T>>::insert(merkle_root.0, new_feed.clone());
+				<GetFeedByID>::insert(next_feed_id, new_feed.clone());
+				<GetFeedByKey>::insert(merkle_root.0, new_feed.clone());
 				feed_id = next_feed_id.clone();
-				<GetNextFeedID<T>>::put(next_feed_id+One::one());
-				Self::deposit_event(RawEvent::NewFeed(feed_id));
+				let feed_id_counter : IdType = next_feed_id+1;
+				<GetNextFeedID>::put(feed_id_counter);
+				Self::deposit_event(Event::NewFeed(feed_id));
 			}
 		}
 
-		/*
-  		log({ type: 'chain', body: [`Publishing a plan`] })
-  		const [plan] = args
-  		const { feeds, from, until, importance, config, schedules } =  plan
-  		const userID = user.id
-		plan.sponsor = userID // or patron?
-		const planID = DB.plans.push(plan)
-		plan.id = planID
-		// Add planID to unhostedPlans
-		DB.unhostedPlans.push(planID)
-		// Add feeds to unhosted
-		plan.unhostedFeeds = feeds
-		// Find hosters,encoders and attestors
-		tryContract({ plan, log })
-		// Emit event
-		const NewPlan = { event: { data: [planID], method: 'NewPlan' } }
-		const event = [NewPlan]
-		handlers.forEach(([name, handler]) => handler(event))
-		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn publish_plan(origin, plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>){
+		fn publish_plan(origin, plan: Plan<T::BlockNumber>){
 			let sponsor_address = ensure_signed(origin)?;
 			let user = Self::load_user(sponsor_address);
-			let next_plan_id = <GetNextPlanID<T>>::get();
-			let new_plan = Plan::<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId> {
+			let next_plan_id = <GetNextPlanID>::get();
+			let new_plan = Plan::<T::BlockNumber> {
 				id: next_plan_id.clone(),
 				sponsor: user.id,
 				..plan
 			};
 			<GetPlanByID<T>>::insert(next_plan_id.clone(), new_plan.clone());
 			let plan_id = next_plan_id.clone();
-			<GetNextPlanID<T>>::put(next_plan_id+One::one());
+			let plan_id_counter : IdType = next_plan_id+1;
+			<GetNextPlanID>::put(plan_id_counter);
 			//unzip plan 
-			Self::make_draft_contracts(new_plan);
-			//verify plan.from is now or in past,
-			//else schedule scheduled_make_contracts in the future
-			//{
-				//get the queue
-				//try to find providers
-				//emit events
-			//}
-			Self::deposit_event(RawEvent::NewPlan(plan_id.clone()));
+			let contract_ids = Self::make_contracts_schedule_amendments(new_plan);
+			// for each contract ID schedule amendment (extrinsic) to execute on contract from.
+			// TODO make amendments and add to pending amendments
+			Self::deposit_event(Event::NewPlan(plan_id.clone()));
 		}
 
-		// If within Self::make_draft_contracts the queue of unhosted sets is not zero, this extrinsic is scheduled
-		// calls make_draft_contracts again 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn scheduled_activate_contracts(origin){
 			//todo origins
-			Self::try_activate_draft_contracts();
+			Self::try_next_amendments();
 		}
 
-		/*
-		const log = connections[name].log
-		const userID = user.id
-		const [encoderKey, form] = args
-		if (DB.users[userID-1].encoderKey) return log({ type: 'chain', body: [`User is already registered as encoder`] })
-		const keyBuf = Buffer.from(encoderKey, 'hex')
-		DB.users[userID - 1].encoderKey = keyBuf.toString('hex')
-		DB.users[userID - 1].encoderForm = form
-		DB.idleEncoders.push(userID)
-		tryContract({ log })
+		#[weight = (100000, Operational, Pays::No)]
+		fn scheduled_amendment(origin, contract_id: IdType){
+			//todo origins
+			if let Some(amendment_id) =
+			Self::make_draft_amendment(contract_id, Providers::default()) {
+				Self::add_to_pending_amendments([amendment_id].to_vec(), None);
+				Self::try_next_amendments();
+			}
 
-		*/
+		}
+
+
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_encoder(origin, encoder_key: NoiseKey, form: Form<T::Moment>){
+		fn register_encoder(origin, key: NoiseKey, form: Form<T::BlockNumber>){
 
 			let user_address = ensure_signed(origin)?;
 			let mut user = Self::load_user(user_address);
-			user.encoder_form = Some(form);
-			user.encoder_key = Some(encoder_key);
+			let new_role_data = ProviderRoleData::<T::BlockNumber> {
+				key: key,
+				form: form.clone(),
+				capacity: form.capacity.clone(),
+				idle_storage: form.storage.clone(),
+				jobs: BTreeSet::new()
+			};
+			user.encoder = Some(new_role_data);
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Encoder, user.id, ());
-			<Roles<T>>::insert(Role::IdleEncoder, user.id, ());
-			Self::try_activate_draft_contracts();
+			<Roles>::insert(Role::Encoder, user.id, ());
+			<Roles>::insert(Role::IdleEncoder, user.id, ());
+			Self::try_next_amendments();
 		}
 
-		/*
-		const log = connections[name].log
-		const userID = user.id
-		const [hosterKey, form] = args
-		// @TODO emit event or make a callback to notify the user
-		if (DB.users[userID-1].hosterKey) return log({ type: 'chain', body: [`User is already registered as a hoster`] })
-		const keyBuf = Buffer.from(hosterKey, 'hex')
-		DB.users[userID - 1].hosterKey = keyBuf.toString('hex')
-		DB.users[userID - 1].hosterForm = form
-		DB.idleHosters.push(userID)
-		tryContract({ log })
-		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_hoster(origin, hoster_key: NoiseKey, form: Form<T::Moment>){
+		fn register_hoster(origin, hoster_key: NoiseKey, form: Form<T::BlockNumber>){
 			let user_address = ensure_signed(origin)?;
 			let mut user = Self::load_user(user_address);
-			user.hoster_form = Some(form);
-			user.hoster_key = Some(hoster_key);
+			let new_role_data = ProviderRoleData::<T::BlockNumber> {
+				key: hoster_key,
+				form: form.clone(),
+				capacity: form.capacity.clone(),
+				idle_storage: form.storage.clone(),
+				jobs: BTreeSet::new()
+			};
+			user.hoster = Some(new_role_data);
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Hoster, user.id, ());
-			<Roles<T>>::insert(Role::IdleHoster, user.id, ());
-			Self::try_activate_draft_contracts();
+			<Roles>::insert(Role::Hoster, user.id, ());
+			<Roles>::insert(Role::IdleHoster, user.id, ());
+			Self::try_next_amendments();
 		}
 
-		/*
-		const userID = user.id
-		const [attestorKey, form] = args
-		if (DB.users[userID-1].attestorKey) return log({ type: 'chain', body: [`User is already registered as a attestor`] })
-		const keyBuf = Buffer.from(attestorKey, 'hex')
-		DB.users[userID - 1].attestorKey = keyBuf.toString('hex')
-		DB.users[userID - 1].attestorForm = form
-		DB.idleAttestors.push(userID)
-		checkAttestorJobs(log)
-		tryContract({ log })
-		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn register_attestor(origin, attestor_key: NoiseKey, form: Form<T::Moment>){
+		fn register_attestor(origin, attestor_key: NoiseKey, form: Form<T::BlockNumber>){
 			let user_address = ensure_signed(origin)?;
 			let mut user = Self::load_user(user_address);
-			user.attestor_form = Some(form);
-			user.attestor_key = Some(attestor_key);
+			let new_role_data = ProviderRoleData::<T::BlockNumber> {
+				key: attestor_key,
+				form: form.clone(),
+				capacity: form.capacity.clone(),
+				idle_storage: form.storage.clone(),
+				jobs: BTreeSet::new()
+			};
+			user.attestor = Some(new_role_data);
 			Self::save_user(&mut user);
-			<Roles<T>>::insert(Role::Attestor, user.id, ());
+			<Roles>::insert(Role::Attestor, user.id, ());
 			Self::give_attestors_jobs(&mut [user.id], &mut []);
-			Self::try_activate_draft_contracts();
+			Self::try_next_amendments();
 		}
 
 		// Ensure that these match new logic TODO
@@ -713,11 +665,10 @@ decl_module!{
 			
 			let user_address = ensure_signed(origin)?;
 			let mut user = Self::load_user(user_address);
-			user.encoder_form = None;
-			user.encoder_key = None;
+			user.encoder = None;
 			Self::save_user(&mut user);
-			<Roles<T>>::remove(Role::Encoder, user.id);
-			<Roles<T>>::remove(Role::IdleEncoder, user.id);
+			<Roles>::remove(Role::Encoder, user.id);
+			<Roles>::remove(Role::IdleEncoder, user.id);
 		}
 
 		// Ensure that these match new logic TODO
@@ -725,11 +676,10 @@ decl_module!{
 		fn unregister_hoster(origin){
 			let user_address = ensure_signed(origin)?;
 			let mut user = Self::load_user(user_address);
-			user.hoster_form = None;
-			user.hoster_key = None;
+			user.hoster = None;
 			Self::save_user(&mut user);
-			<Roles<T>>::remove(Role::Hoster, user.id);
-			<Roles<T>>::remove(Role::IdleHoster, user.id);
+			<Roles>::remove(Role::Hoster, user.id);
+			<Roles>::remove(Role::IdleHoster, user.id);
 
 		}
 
@@ -738,94 +688,64 @@ decl_module!{
 		fn unregister_attestor(origin){	
 			let user_address = ensure_signed(origin)?;
 			let mut user = Self::load_user(user_address);
-			user.attestor_form = None;
-			user.attestor_key = None;
+			user.attestor = None;
 			Self::save_user(&mut user);
-			<Roles<T>>::remove(Role::Attestor, user.id);
-			<Roles<T>>::remove(Role::IdleAttestor, user.id);
+			<Roles>::remove(Role::Attestor, user.id);
+			<Roles>::remove(Role::IdleAttestor, user.id);
 		}
 
-		/*
-		// @TODO check if encodingDone and only then trigger hostingStarts
-		const [ contractID ] = args
-		DB.contractsHosted.push(contractID)
-		const contract = DB.contracts[contractID - 1]
-		// if hosting starts, also the attestor finished job, add them to idleAttestors again
-		const attestorID = contract.attestor
-		if (!DB.idleAttestors.includes(attestorID)) {
-			DB.idleAttestors.push(attestorID)
-			checkAttestorJobs(log)
-		}
-		const userID = user.id
-		const confirmation = { event: { data: [contractID, userID], method: 'HostingStarted' } }
-		const event = [confirmation]
-		handlers.forEach(([name, handler]) => handler(event))
-		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
-		*/
+		//args - report - (amendment_id, vec<failed ids>)
+		// TODO - fail case, submit amendment
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn hosting_starts(origin, contract_id: T::ContractId ){
+		fn amendment_report(origin, report: (IdType, Vec<IdType>)){
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
-			if let Some(mut contract) = <GetContractByID<T>>::get(contract_id){
-				if let Some(mut providers) = contract.providers {
-					ensure!(providers.hosters.contains(&user.id), DatDotError::<T>::PermissionError);
-					if !providers.active_hosters.contains(&user.id) {
-						providers.active_hosters.push(user.id);
-					} else if providers.active_hosters.len() == providers.hosters.len() {
-						for current_encoder in providers.clone().encoders {
-							<Roles<T>>::insert(Role::IdleEncoder, current_encoder.clone(), ());
+			if let Some(amendment) = <GetAmendmentByID>::get(report.0) {
+				let contract_id = amendment.contract;
+				if let Some(mut contract) = <GetContractByID>::get(contract_id){
+					if let Some(last_amendment) = <GetAmendmentByID>::get(contract.amendments.pop().unwrap()) {
+						let mut providers = last_amendment.providers.clone();
+						// TODO logic here needs to be refactored for amendments
+						ensure!(providers.hosters.contains(&user.id), DatDotError::<T>::PermissionError);
+						if !contract.active_hosters.contains(&user.id) {
+							contract.active_hosters.push(user.id);
+						} else {
+							if contract.active_hosters.len() == providers.hosters.len() {
+								for current_encoder in providers.clone().encoders {
+									<Roles>::insert(Role::IdleEncoder, current_encoder.clone(), ());
+								}
+							}
 						}
+						<GetContractByID>::insert(contract_id, contract.clone());
+						Self::give_attestors_jobs(providers.attestors.as_slice(), &mut []);
+						Self::start_challenges(contract_id, user.id);
+						Self::deposit_event(Event::HostingStarted(contract_id));
 					}
-					contract.providers = Some(providers.clone());
-					<GetContractByID<T>>::insert(contract_id, contract.clone());
-					Self::give_attestors_jobs(providers.attestors.as_slice(), &mut []);
-					Self::start_challenges(contract_id, user.id);
-					Self::deposit_event(RawEvent::HostingStarted(contract_id));
-				} else {
-					//TODO contract is still in draft
-				}
-			};
+				};
+			}
 			//todo should be economic logic, still under consideration.
 		}
 
-		/*
-
-		const [ contractID, hosterID ] = args
-		const ranges = DB.contracts[contractID - 1].ranges // [ [0, 3], [5, 7] ]
-		// @TODO currently we check one random chunk in each range => find better logic
-		const chunks = ranges.map(range => getRandomInt(range[0], range[1] + 1))
-		const storageChallenge = { contract: contractID, hoster: hosterID, chunks }
-		const storageChallengeID = DB.storageChallenges.push(storageChallenge)
-		storageChallenge.id = storageChallengeID
-		const attestorID = getAttestor(storageChallenge, log)
-		if (!attestorID) return
-		storageChallenge.attestor = attestorID
-		// emit events
-		const challenge = { event: { data: [storageChallengeID], method: 'NewStorageChallenge' } }
-		const event = [challenge]
-		handlers.forEach(([name, handler]) => handler(event))
-
-		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn request_storage_challenge(origin, contract_id: T::ContractId, hoster_id: T::UserId ){
+		fn request_storage_challenge(origin, contract_id: IdType, hoster_id: IdType ){
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
-			if let Some(contract) = <GetContractByID<T>>::get(&contract_id){
+			if let Some(contract) = <GetContractByID>::get(&contract_id){
 				let sponsor = <GetPlanByID<T>>::get(contract.plan).ok_or(DatDotError::<T>::MissingPlan)?.sponsor;
 				ensure!(sponsor == user.id, DatDotError::<T>::MissingChallenge);
 				let ranges = contract.ranges;
 				let random_chunks = Self::random_from_ranges(ranges);
-				let challenge_id = <GetNextChallengeID<T>>::get();
-				let challenge = StorageChallenge::<T> {
+				let challenge_id = <GetNextChallengeID>::get();
+				let challenge = StorageChallenge {
 					id: challenge_id.clone(),
 					contract: contract_id,
 					hoster: hoster_id,
 					chunks: random_chunks,
 					attestor: None
 				};
-				<GetChallengeByID<T>>::insert(challenge_id, challenge.clone());
-				<GetNextChallengeID<T>>::put(challenge_id.clone()+One::one());
-				Self::give_attestors_jobs(&[], &mut [AttestorJob::StorageChallenge(challenge_id.clone())]);
+				<GetChallengeByID>::insert(challenge_id, challenge.clone());
+				<GetNextChallengeID>::put(challenge_id.clone()+1);
+				Self::give_attestors_jobs(&[], &mut [JobId::StorageChallenge(challenge_id.clone())]);
 				if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
 					Self::schedule_challenges(contract_id, hoster_id, plan, &[ChallengeType::StorageChallenge]);
 				}
@@ -834,33 +754,12 @@ decl_module!{
 			}
 		}
 
-		/*
-		const [ storageChallengeID, proofs ] = args
-		const storageChallenge = DB.storageChallenges[storageChallengeID - 1]
-		// attestor finished job, add them to idleAttestors again
-		const attestorID = storageChallenge.attestor
-		if (!DB.idleAttestors.includes(attestorID)) {
-		DB.idleAttestors.push(attestorID)
-		checkAttestorJobs(log)
-		}
-		// @TODO validate proof
-		const isValid = validateProof(proofs, storageChallenge)
-		let proofValidation
-		const data = [storageChallengeID]
-		log({ type: 'chain', body: [`StorageChallenge Proof for challenge: ${storageChallengeID}`] })
-		if (isValid) response = { event: { data, method: 'StorageChallengeConfirmed' } }
-		else response = { event: { data: [storageChallengeID], method: 'StorageChallengeFailed' } }
-		// emit events
-		const event = [response]
-		handlers.forEach(([name, handler]) => handler(event))
-		// log({ type: 'chain', body: [`emit chain event ${JSON.stringify(event)}`] })
-		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_storage_challenge(origin, challenge_id: T::ChallengeId, proofs: Vec<Proof> ){
+		fn submit_storage_challenge(origin, challenge_id: IdType, proofs: Vec<Proof> ){
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
 			let mut success: bool = true;
-			if let Some(challenge) = <GetChallengeByID<T>>::get(&challenge_id){
+			if let Some(challenge) = <GetChallengeByID>::get(&challenge_id){
 				ensure!(user.id == challenge.hoster, DatDotError::<T>::PermissionError);
 				for proof in proofs {
 					if Self::validate_proof(proof.clone(), challenge.clone()){
@@ -870,66 +769,43 @@ decl_module!{
 					}
 				}
 				if success {
-					Self::deposit_event(RawEvent::ProofOfStorageConfirmed(challenge_id.clone()));
+					Self::deposit_event(Event::ProofOfStorageConfirmed(challenge_id.clone()));
 				} else {
-					Self::deposit_event(RawEvent::ProofOfStorageFailed(challenge_id.clone()));
+					Self::deposit_event(Event::ProofOfStorageFailed(challenge_id.clone()));
 				}
 			} else {
 				fail!(DatDotError::<T>::MissingChallenge);
 			}
 		}
 
-		/*
-		const log = connections[name].log
-		const [ contractID ] = args
-		const performanceChallenge = { contract: contractID }
-		const performanceChallengeID = DB.performanceChallenges.push(performanceChallenge)
-		performanceChallenge.id = performanceChallengeID
-		if (DB.idleAttestors.length >= 5) emitPerformanceChallenge(performanceChallenge, log)
-		else DB.attestorJobs.push({ fnName: 'emitPerformanceChallenge', opts: performanceChallenge })
-		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn request_performance_challenge(origin, contract_id: T::ContractId, hoster_id: T::UserId){
+		fn request_performance_challenge(origin, contract_id: IdType, hoster_id: IdType){
 			let user_address = ensure_signed(origin)?;
 			let user = Self::load_user(user_address);
 			//TODO ensure user is sponsor 
-			let attestation_id = <GetNextAttestationID<T>>::get();
-			let attestation = PerformanceChallenge::<T> {
+			let attestation_id = <GetNextAttestationID>::get();
+			let attestation = PerformanceChallenge {
 				id: attestation_id.clone(),
 				attestors: None,
 				contract: contract_id,
 				hoster: hoster_id
 			};
-			<GetPerformanceChallengeByID<T>>::insert(attestation_id, attestation.clone());
-			<GetNextAttestationID<T>>::put(attestation_id.clone()+One::one());
-			Self::give_attestors_jobs(&mut [], &mut [AttestorJob::PerformanceChallenge(attestation_id)]);
-			if let Some(contract) = <GetContractByID<T>>::get(contract_id){
+			<GetPerformanceChallengeByID>::insert(attestation_id, attestation.clone());
+			let next_attestation_id : IdType = attestation_id.clone()+1;
+			<GetNextAttestationID>::put(next_attestation_id);
+			Self::give_attestors_jobs(&mut [], &mut [JobId::PerformanceChallenge(attestation_id)]);
+			if let Some(contract) = <GetContractByID>::get(contract_id){
 				if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
 					Self::schedule_challenges(contract_id, hoster_id, plan, &[ChallengeType::PerformanceChallenge]);
 				}
 			}
 		}
 
-		/*
-		const [ performanceChallengeID, report ] = args
-		const performanceChallenge = DB.performanceChallenges[performanceChallengeID - 1]
-		// attestor finished job, add them to idleAttestors again
-		const attestorID = user.id
-		if (!DB.idleAttestors.includes(attestorID)) {
-			DB.idleAttestors.push(attestorID)
-			checkAttestorJobs(log)
-		}
-		// emit events
-		if (report) response = { event: { data: [performanceChallengeID], method: 'PerformanceChallengeConfirmed' } }
-		else response = { event: { data: [performanceChallengeID], method: 'PerformanceChallengeFailed' } }
-		const event = [response]
-		handlers.forEach(([name, handler]) => handler(event))
-		*/
 		#[weight = (100000, Operational, Pays::No)] //todo weight
-		fn submit_performance_challenge(origin, attestation_id: T::PerformanceChallengeId, reports: Vec<Report>){
+		fn submit_performance_challenge(origin, attestation_id: IdType, reports: Vec<Report>){
 			let user_address = ensure_signed(origin)?;
 			let mut success: bool = true;
-			if let Some(attestation) = <GetPerformanceChallengeByID<T>>::get(&attestation_id){
+			if let Some(attestation) = <GetPerformanceChallengeByID>::get(&attestation_id){
 				for report in reports {
 					match report.latency {
 						Some(_) => {
@@ -943,9 +819,9 @@ decl_module!{
 					}
 				}
 				if success {
-					Self::deposit_event(RawEvent::AttestationReportConfirmed(attestation_id.clone()));
+					Self::deposit_event(Event::AttestationReportConfirmed(attestation_id.clone()));
 				} else {
-					Self::deposit_event(RawEvent::AttestationReportFailed(attestation_id.clone()));
+					Self::deposit_event(Event::AttestationReportFailed(attestation_id.clone()));
 				}
 			}
 		}
@@ -955,25 +831,60 @@ decl_module!{
 /******************************************************************************
   Internal functions
 ******************************************************************************/
+
+
 impl<T: Trait> Module<T> {
 
-	fn make_draft_contracts(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>){
-		let mut draft_contracts: Vec<T::ContractId> = plan.feeds.iter().flat_map(|feed_struct|{
-			let feed_opt: Option<Feed<T>> = <GetFeedByID<T>>::get(feed_struct.id);
+	fn make_contracts_schedule_amendments(plan: Plan<T::BlockNumber>){
+		let contract_ids = Self::make_contracts(plan.clone());
+		for contract_id in contract_ids {
+			Self::schedule_amendment(plan.clone(), contract_id, None);
+		}
+	}
+
+	fn schedule_amendment(
+		plan: Plan<T::BlockNumber>, 
+		contract_id: IdType, 
+		amendment_id: Option<IdType>
+	){
+		if let Some(sponsor) = <GetUserByID<T>>::get(&plan.sponsor){
+			let sponsor_origin = RawOrigin::Signed(sponsor.address);
+			let call = Call::scheduled_amendment(contract_id);
+			//id is (plan_id, contract_id, Some(amendment_id) OR None if no amendments)
+			(plan.id, contract_id, amendment_id).using_encoded(
+				|id_bytes|{
+					T::Scheduler::schedule_named(
+						id_bytes.to_vec(),
+						DispatchTime::At(plan.from.into()),
+						None,
+						254,
+						sponsor_origin.clone().into(),
+						call.into()
+					);
+				}
+			)
+		}
+	}
+
+	fn make_contracts(plan: Plan<T::BlockNumber>) -> Vec<IdType> {
+		let mut contract_ids: Vec<IdType> = plan.feeds.iter().flat_map(|feed_struct|{
+			let feed_opt: Option<Feed> = <GetFeedByID>::get(feed_struct.id);
 			match feed_opt {
 				Some(feed) => {
 					let sets = Self::split_main(feed_struct.clone().ranges);
 					sets.iter().map(|set|{
-						let contract_id = <GetNextContractID<T>>::get();
-						let draft_contract = Contract::<T> {
+						let contract_id : IdType = <GetNextContractID>::get();
+						let draft_contract = Contract {
 							id: contract_id.clone(),
 							plan: plan.id,
 							ranges: set.to_vec(),
-							providers: None,
-							failed_hosters: Vec::new()
+							active_hosters: Vec::new(),
+							amendments: Vec::new(),
+							feed: feed_struct.id
 						};
-						<GetContractByID<T>>::insert(contract_id, draft_contract);
-						<GetNextContractID<T>>::put(contract_id.clone()+One::one());
+						<GetContractByID>::insert(contract_id, draft_contract);
+						let next_contract_id : IdType = contract_id.clone()+1;
+						<GetNextContractID>::put(next_contract_id);
 						contract_id
 					}).collect()
 				},
@@ -982,84 +893,145 @@ impl<T: Trait> Module<T> {
 				}
 			}
 		}).collect();
-		let mut current_draft_contracts = <DraftContractsQueue<T>>::get();
-		current_draft_contracts.append(&mut draft_contracts);
-		<DraftContractsQueue<T>>::put(current_draft_contracts);
+		// TODO replace draft contracts with complete contracts, add hosters via amendments.
+		contract_ids
 	}
 
-	fn try_activate_draft_contracts(){
-		let mut failed_contracts: Vec<T::ContractId> = Vec::new();
-		let mut failed_contract_count = 0;
-		let mut current_draft_contracts: Vec<T::ContractId> = <DraftContractsQueue<T>>::get();
-		for contract_id in current_draft_contracts.iter_mut().take(T::ContractActivationCap::get() as usize) {
-			if let Err(Some(failed_contract)) = Self::activate_single_draft_contract(*contract_id){
-				failed_contract_count += 1;
-				failed_contracts.push(failed_contract);
+	fn make_draft_amendment(contract_id: IdType, reuse: Providers) -> Option<IdType> {
+		if let Some(mut contract) = <GetContractByID>::get(contract_id) {
+			let amendment_id : IdType = <GetNextAmendmentID>::get();
+			let amendment = Amendment {
+				id: amendment_id,
+				providers: reuse,
+				contract: contract_id
+			};
+			contract.amendments.push(amendment_id);
+			<GetContractByID>::insert(contract_id, contract);
+			<GetAmendmentByID>::insert(amendment_id, amendment);
+			let next_amendment_id : IdType = amendment_id+1;
+			<GetNextAmendmentID>::put(next_amendment_id);
+			Some(amendment_id)
+		} else {
+			None
+		}
+	}
+
+	fn add_to_pending_amendments(
+		amendment_ids: Vec<IdType>, 
+		pending_option: Option<Vec<IdType>>
+	){
+		//get amendment queue, insert amendments, sort by priority
+		let mut current_pending_set: Vec<IdType> = match pending_option {
+			Some(item) => {
+				item.clone()
+			},
+			None => {
+				PendingAmendments::get()
+			}
+		};
+
+		let mut new_amendments: Vec<IdType> = amendment_ids.clone();
+		current_pending_set.append(&mut new_amendments);
+		current_pending_set.sort_unstable_by(Self::amendment_sort_function);
+		PendingAmendments::put(current_pending_set);
+	}
+
+	fn amendment_sort_function(amendment_a: &IdType, amendment_b: &IdType) -> Ordering {
+		let a_cmp : usize = if let Some(a) = <GetAmendmentByID>::get(amendment_a) {
+			a.providers.hosters.len() +
+			a.providers.encoders.len() +
+			a.providers.attestors.len()
+		} else {
+			0
+		};
+		let b_cmp : usize = if let Some(b) = <GetAmendmentByID>::get(amendment_b) {
+			b.providers.hosters.len() +
+			b.providers.encoders.len() +
+			b.providers.attestors.len()
+		} else {
+			0
+		};
+		b_cmp.cmp(&a_cmp)
+	}
+
+	fn try_next_amendments(){
+		let mut failed_amendments: Vec<IdType> = Vec::new();
+		let mut failed_amendment_count = 0;
+		let mut current_draft_amendments: Vec<IdType> = <PendingAmendments>::get();
+		for amendment_id in current_draft_amendments.iter_mut().take(T::ContractActivationCap::get() as usize) {
+			if let Err(Some(failed_amendment)) = Self::execute_amendment(*amendment_id){
+				failed_amendment_count += 1;
+				failed_amendments.push(failed_amendment);
 			}
 		}
 		//and try that many MORE contracts, but ONLY ONCE.
-		for contract_id in current_draft_contracts.iter_mut().take(failed_contract_count){
-			if let Err(Some(failed_contract)) = Self::activate_single_draft_contract(*contract_id){
-				failed_contracts.push(failed_contract);
+		for amendment_id in current_draft_amendments.iter_mut().take(failed_amendment_count){
+			if let Err(Some(failed_amendment)) = Self::execute_amendment(*amendment_id){
+				failed_amendments.push(failed_amendment);
 			}
 		}
-		//currently we put failed contracts back into the front, but we need some fallback 
-		failed_contracts.append(&mut current_draft_contracts);
-		<DraftContractsQueue<T>>::put(failed_contracts);
-		
+		Self::add_to_pending_amendments(failed_amendments, Some(current_draft_amendments))
 	}
 
-	fn activate_single_draft_contract(contract_id: T::ContractId) -> Result<(),Option<T::ContractId>> {
-		//contract should exist, if removed, should remove from queue too, so unwrap
-		let contract_option = <GetContractByID<T>>::get(contract_id);
-		if let Some(mut contract) = contract_option {
-			if let Some(mut plan) = <GetPlanByID<T>>::get(contract.plan){
-				if let Some(providers) = Self::get_providers(plan.clone()){
-					contract.providers = Some(providers);
-					plan.contracts.push(contract_id);
-					<GetContractByID<T>>::insert(contract_id, contract);
-					<GetPlanByID<T>>::insert(plan.clone().id, plan.clone());
-					Self::deposit_event(RawEvent::NewContract(contract_id.clone()));
-					//Self::schedule_contract_followup(contract, plan);
-					Ok(())
-				} else {
-					//not enough providers, throw error and ask to requeue contract
-					Err(Some(contract_id))
-				}
+	
+	fn execute_amendment(amendment_id: IdType) -> Result<(),Option<IdType>> {
+			let amendment_option = <GetAmendmentByID>::get(amendment_id);
+			if let Some(mut amendment) = amendment_option {
+				if let Some(contract) = <GetContractByID>::get(amendment.contract){
+					if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
+						if let Some(providers) = Self::get_providers(plan.clone(), amendment.providers){
+							amendment.providers = providers;
+							<GetAmendmentByID>::insert(amendment_id, amendment);
+							Self::deposit_event(Event::NewAmendment(amendment_id.clone()));
+							Ok(())
+						} else {
+							//insufficient, return to queue
+							Err(Some(amendment_id))
+						}
+					} else {
+						Err(None)
+					}
 			} else {
-				//plan is missing, this should also not be possible/an error
-				// TODO remove plan for missing plan
+				//amendment unavailable, do not return to queue
 				Err(None)
 			}
 		} else {
-			//if the contract doesn't exist, this is an error, but we should return no ID
-			//so the ID is not readded to queue
 			Err(None)
 		}
 	}
 
-	fn get_providers(plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Option<Providers<T>> {
+	fn get_providers(plan: Plan<T::BlockNumber>, reused: Providers) -> Option<Providers> {
 		let mut avoid = Self::make_avoid(&plan);
-		let attestors = Self::select(Role::IdleAttestor, T::AttestorsPerContract::get().into(), |(x,_)|{
-			(!avoid.contains(x)) && Self::qualifyAttestor(&plan, x)
+		avoid.append(&mut reused.encoders.clone());
+		avoid.append(&mut reused.hosters.clone());
+		avoid.append(&mut reused.attestors.clone());
+		let mut attestors = Self::select(Role::IdleAttestor, T::AttestorsPerContract::get().into(), |(x,_)|{
+			(!avoid.contains(x)) && Self::doesQualify(&plan, x, Role::IdleAttestor)
 		});
 		avoid.append(&mut attestors.clone());
-		if attestors.len() < T::AttestorsPerContract::get() as usize { return None } else {
-			let hosters = Self::select(Role::IdleHoster, T::HostersPerContract::get().into(), |(x,_)|{
-				(!avoid.contains(x)) && Self::qualifyHoster(&plan, x)
+		if attestors.len() < T::AttestorsPerContract::get() as usize - reused.attestors.len() {
+			return None 
+		} else {
+			let mut hosters = Self::select(Role::IdleHoster, T::HostersPerContract::get().into(), |(x,_)|{
+				(!avoid.contains(x)) && Self::doesQualify(&plan, x, Role::IdleHoster)
 			});
 			avoid.append(&mut hosters.clone());
-			if hosters.len() < T::HostersPerContract::get() as usize { return None } else {
-				let encoders = Self::select(Role::IdleEncoder, T::EncodersPerContract::get().into(), |(x,_)|{
-					(!avoid.contains(x)) && Self::qualifyEncoder(&plan, x)
+			if hosters.len() < T::HostersPerContract::get() as usize - reused.hosters.len() { 
+				return None 
+			} else {
+				let mut encoders = Self::select(Role::IdleEncoder, T::EncodersPerContract::get().into(), |(x,_)|{
+					(!avoid.contains(x)) && Self::doesQualify(&plan, x, Role::IdleEncoder)
 				});
 				avoid.append(&mut encoders.clone());
-				if encoders.len() < T::EncodersPerContract::get() as usize { return None } else {
-					Some(Providers::<T> {
+				if encoders.len() < T::EncodersPerContract::get() as usize - reused.encoders.len() { 
+					return None 
+				} else {
+					encoders.append(&mut reused.encoders.clone());
+					hosters.append(&mut reused.hosters.clone());
+					attestors.append(&mut reused.attestors.clone());
+					Some(Providers {
 						encoders: encoders,
 						hosters: hosters,
-						active_hosters: Vec::new(),
-						failed_hosters: Vec::new(),
 						attestors: attestors
 					})
 				}
@@ -1067,95 +1039,89 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn qualifyAttestor(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user_id: &T::UserId)->bool{
+	fn doesQualify(plan: &Plan<T::BlockNumber>, user_id: &IdType, role: Role)->bool{
 		if let Some(user) = <GetUserByID<T>>::get(user_id){
-			if let Some(form) = user.attestor_form {
-				Self::is_idle_now(form)
+			let user_role = match role {
+				Role::IdleAttestor | Role::Attestor => user.attestor,
+				Role::IdleHoster | Role::Hoster => user.hoster,
+				Role::IdleEncoder | Role::Encoder => user.encoder,
+			};
+			if let Some(role_data) = user_role {
+				Self::is_schedule_compatible(role_data.form.clone(), plan.clone(), role) &&
+				Self::capacity_check(role_data.clone()) 
 			} else {
+				// if the user is not participating in the role, 
+				// does not qualify
 				false
+			}
+		} else {
+			false
+		}
+		// future: geolocation
+	}
+
+	fn capacity_check(role_data: ProviderRoleData<T::BlockNumber>) -> bool {
+		let storage_used = T::ContractSetSize::get()*65536;
+		storage_used <= role_data.idle_storage && role_data.capacity as usize > role_data.jobs.len()
+	}
+
+	fn is_idle_now(form: &Form<T::BlockNumber>) -> bool {
+		if form.from <= <system::Module<T>>::block_number().into() {
+			if let Some(form_until) = form.until {
+				form_until >= <system::Module<T>>::block_number().into()
+			} else {
+				true
 			}
 		} else {
 			false
 		}
 		
-		// from - until matches curremt time
-		// future: geolocation
 	}
 
-	fn qualifyEncoder(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user_id: &T::UserId)->bool{
-		if let Some(user) = <GetUserByID<T>>::get(user_id){
-			if let Some(form) = user.encoder_form {
-				if Self::is_idle_now(form) {
-					//Self::contract_storage_check(form);
-					//currently encoders do not register storage
-					true
-				} else {
-					false
-				}
-			} else {
-				false
-			}
-		} else {
-			false
-		}
-		// from - until matches current time
-		// future: geolocation
-	}
-
-	fn qualifyHoster(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>, user_id: &T::UserId)->bool{
-		if let Some(user) = <GetUserByID<T>>::get(user_id){
-			if let Some(form) = user.hoster_form {
+	fn is_schedule_compatible(form: Form<T::BlockNumber>, plan: Plan<T::BlockNumber>, role: Role) -> bool {
+		let end_block = match role {
+			Role::IdleAttestor | Role::Attestor => {
+				<system::Module<T>>::block_number()+T::AttestingDuration::get().into()
+			},
+			Role::IdleEncoder | Role::Encoder => {
+				<system::Module<T>>::block_number()+T::EncodingDuration::get().into()
+			},
+			Role::IdleHoster | Role::Hoster => {
 				if let Some(plan_until_time) = plan.until.time {
-					if form.from <= plan.from && form.until >= plan_until_time {
-						Self::contract_storage_check(form)
-					} else {
-						false
-					}
+					plan_until_time
 				} else {
-					// check other plan.until fields
-					true
+					0.into() //open ended/no end block defined.
 				}
-			} else {
-				false
-			}
-		} else {
-			false
-		}
-		// future: geolocation
-		// future: schedule match
+			},
+		};
+		let matches_end = match form.until {
+			Some(until) => until >= end_block,
+			None => true,
+		};
+		Self::is_idle_now(&form) && form.from <= plan.from && matches_end
 	}
 
-	fn contract_storage_check(form: Form<T::Moment>) -> bool {
-		let storage_used = T::ContractSetSize::get()*65536;
-		storage_used <= form.storage
-	}
-
-	fn is_idle_now(form: Form<T::Moment>) -> bool {
-		// comparision without comparison operator because I have Scale trait - maybe I should just add comparison trait?
-		form.from.div(<system::Module<T>>::block_number().into()) == Zero::zero() && form.until.div(<system::Module<T>>::block_number().into()) >= One::one()
-	}
-
-	fn make_avoid(plan: &Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>) -> Vec<T::UserId>{
+	fn make_avoid(plan: &Plan<T::BlockNumber>) -> Vec<IdType>{
 		let mut avoid = Vec::new();
 		avoid.push(plan.sponsor);
 		for feed_struct in &plan.feeds {
-			if let Some(feed) = <GetFeedByID<T>>::get(feed_struct.id){
+			if let Some(feed) = <GetFeedByID>::get(feed_struct.id){
 				avoid.push(feed.publisher.clone());
 			}
 		}
 		avoid
 	}
 
-	fn select(select_role: Role, select_amount: usize, select_function: impl Fn((&T::UserId, &())) -> bool) -> Vec<T::UserId>{
-		<Roles<T>>::iter_prefix(select_role)
+	fn select(select_role: Role, select_amount: usize, select_function: impl Fn((&IdType, &())) -> bool) -> Vec<IdType>{
+		<Roles>::iter_prefix(select_role)
 			.filter(|(x, y)|{select_function((x, y))})
 			.take(select_amount)
 			.map(|(x, _)|x)
 			.collect()
 	}
 
-	fn start_challenges(contract_id: T::ContractId, hoster_id: T::UserId){
-		if let Some(contract) = <GetContractByID<T>>::get(contract_id){
+	fn start_challenges(contract_id: IdType, hoster_id: IdType){
+		if let Some(contract) = <GetContractByID>::get(contract_id){
 			if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
 					Self::schedule_challenges(
 						contract_id,
@@ -1168,9 +1134,9 @@ impl<T: Trait> Module<T> {
 	}
 
 	fn schedule_challenges(
-		contract_id: T::ContractId,
-		hoster_id: T::UserId,
-		plan: Plan<T::PlanId, T::FeedId, T::Moment, T::UserId, T::ContractId>,
+		contract_id: IdType,
+		hoster_id: IdType,
+		plan: Plan<T::BlockNumber>,
 		challenge_types: &[ChallengeType]
 	){
 		// if plan.until.time > time now, do logic below
@@ -1208,73 +1174,77 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn load_user(account_id: T::AccountId) -> User<T::UserId, T::AccountId, T::Moment> {
+	fn load_user(account_id: T::AccountId) -> User<T::AccountId, T::BlockNumber> {
 			if let Some(user) = <GetUserByKey<T>>::get(&account_id){
 				user
 			} else {
-				let mut user_id = <GetNextUserID<T>>::get();
-				let mut new_user = User::<T::UserId, T::AccountId, T::Moment> {
+				let mut user_id = <GetNextUserID>::get();
+				let mut new_user = User::<T::AccountId, T::BlockNumber> {
 					id: user_id.clone(),
 					address: account_id.clone(),
-					..User::<T::UserId, T::AccountId, T::Moment>::default()
+					..User::<T::AccountId, T::BlockNumber>::default()
 				};
 				Self::save_user(&mut new_user);
-				<GetNextUserID<T>>::put(user_id+One::one());
+				let user_id_counter : IdType = user_id+1;
+				<GetNextUserID>::put(user_id_counter);
 				new_user
 			}
 	}
 
-	fn save_user(user: &mut User<T::UserId, T::AccountId, T::Moment>){
+	fn save_user(user: &mut User<T::AccountId, T::BlockNumber>){
 		<GetUserByID<T>>::insert(user.id, user.clone());
 		<GetUserByKey<T>>::insert(user.clone().address, user.clone());
 	}
 
 	fn give_attestors_jobs(
-		attestors: &[T::UserId],
-		jobs: &mut [AttestorJob<T::ChallengeId, T::PerformanceChallengeId>]
+		attestors: &[IdType],
+		jobs: &mut [JobId]
 	){
 		for attestor in attestors {
-			<Roles<T>>::insert(Role::IdleAttestor, attestor, ());
+			<Roles>::insert(Role::IdleAttestor, attestor, ());
 		}
-		let mut old_job_queue = <GetAttestorJobQueue<T>>::get();
+		let mut old_job_queue = <GetJobIdQueue>::get();
 		let mut job_queue_slice = [old_job_queue.as_mut_slice(), jobs].concat();
 		let job_queue = job_queue_slice.iter();
 		for job in job_queue.clone() {
 			match job {
-				AttestorJob::PerformanceChallenge(challenge_id) => {
+				JobId::PerformanceChallenge(challenge_id) => {
 					// Verify we have a sufficient number of attestors for this challenge type
 					let mut attestor_count = 0;
-					let mut performance_attestors : Vec<T::UserId> = Vec::new();
+					let mut performance_attestors : Vec<IdType> = Vec::new();
 						// emit an attestation request for each performance attestor
-					for attestor in <Roles<T>>::iter_prefix(Role::IdleAttestor) {
+					for attestor in <Roles>::iter_prefix(Role::IdleAttestor) {
 						attestor_count += 1;
 						performance_attestors.push(attestor.0);
 						if attestor_count > T::PerformanceAttestorCount::get().into(){
-							<Roles<T>>::remove(Role::IdleAttestor, attestor.0);
-							if let Some(mut challenge) = <GetPerformanceChallengeByID<T>>::get(&challenge_id){
+							<Roles>::remove(Role::IdleAttestor, attestor.0);
+							if let Some(mut challenge) = <GetPerformanceChallengeByID>::get(&challenge_id){
 								challenge.attestors = Some(performance_attestors);
-								<GetPerformanceChallengeByID<T>>::insert(&challenge_id, challenge);
+								<GetPerformanceChallengeByID>::insert(&challenge_id, challenge);
 							}
-							Self::deposit_event(RawEvent::NewPerformanceChallenge(challenge_id.clone()));
+							Self::deposit_event(Event::NewPerformanceChallenge(challenge_id.clone()));
 							break;
 						}
 					}
 				},
-				AttestorJob::StorageChallenge(challenge_id) => {
-					if let Some(attestor) = <Roles<T>>::iter_prefix(Role::IdleAttestor).next(){
-						<Roles<T>>::remove(Role::IdleAttestor, attestor.0);
-						if let Some(mut challenge) = <GetChallengeByID<T>>::get(&challenge_id){
+				JobId::StorageChallenge(challenge_id) => {
+					if let Some(attestor) = <Roles>::iter_prefix(Role::IdleAttestor).next(){
+						<Roles>::remove(Role::IdleAttestor, attestor.0);
+						if let Some(mut challenge) = <GetChallengeByID>::get(&challenge_id){
 							challenge.attestor = Some(attestor.0);
-							<GetChallengeByID<T>>::insert(&challenge_id, challenge);
+							<GetChallengeByID>::insert(&challenge_id, challenge);
 						}
-						Self::deposit_event(RawEvent::NewStorageChallenge(challenge_id.clone()));
+						Self::deposit_event(Event::NewStorageChallenge(challenge_id.clone()));
 						break;
 					}
+				},
+				_ => {
+					//TODO, check.
 				}
 			}
 		}
-		<GetAttestorJobQueue<T>>::put(
-			job_queue.collect::<Vec<&AttestorJob<T::ChallengeId, T::PerformanceChallengeId>>>()
+		<GetJobIdQueue>::put(
+			job_queue.collect::<Vec<&JobId>>()
 		);
 	}
 
@@ -1285,7 +1255,7 @@ impl<T: Trait> Module<T> {
 		//todo, get rng from 0->set_size-1, get a single random index based on that.
 	}
 
-	fn validate_proof(proof: Proof, challenge: StorageChallenge<T>) -> bool {
+	fn validate_proof(proof: Proof, challenge: StorageChallenge) -> bool {
 		//TODO validate proof!
 		true
 	}
@@ -1331,8 +1301,8 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<T::UserId> {
-		let members : Vec<T::UserId> = <Roles<T>>::iter_prefix(role).filter_map(|x|{
+	fn get_random_of_role(influence: &[u8], role: &Role, count: u32) -> Vec<IdType> {
+		let members : Vec<IdType> = <Roles>::iter_prefix(role).filter_map(|x|{
 			if x.1 == (){
 				Some(x.0)
 			} else {
