@@ -159,7 +159,9 @@ decl_error! {
 		/// Missing Contract
 		MissingContract,
 		/// Missing Challenge
-		MissingChallenge
+		MissingChallenge,
+		/// Expired Amendment
+		ExpiredAmendment
 	}
 }
 
@@ -695,7 +697,6 @@ decl_module!{
 		}
 
 		//args - report - (amendment_id, vec<failed ids>)
-		// TODO - fail case, submit amendment
 		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn amendment_report(origin, report: (IdType, Vec<IdType>)){
 			let user_address = ensure_signed(origin)?;
@@ -704,26 +705,45 @@ decl_module!{
 				let contract_id = amendment.contract;
 				if let Some(mut contract) = <GetContractByID>::get(contract_id){
 					if let Some(last_amendment) = <GetAmendmentByID>::get(contract.amendments.pop().unwrap()) {
+						ensure!(amendment == last_amendment, DatDotError::<T>::ExpiredAmendment);
 						let mut providers = last_amendment.providers.clone();
-						// TODO logic here needs to be refactored for amendments
-						ensure!(providers.hosters.contains(&user.id), DatDotError::<T>::PermissionError);
-						if !contract.active_hosters.contains(&user.id) {
-							contract.active_hosters.push(user.id);
+						ensure!(providers.attestors.contains(&user.id), DatDotError::<T>::PermissionError);
+						// TODO cancel scheduled amendment followup
+						let failed = report.1;
+						let mut reuse = providers.clone();
+						if failed.len() == 0 {
+							// 	if failed ids is empty,
+							//  immediately schedule challenges for hosters
+							// 	emit new amendment and start challenges
+							Self::hosting_started(reuse.clone().hosters, last_amendment);
 						} else {
-							if contract.active_hosters.len() == providers.hosters.len() {
-								for current_encoder in providers.clone().encoders {
-									<Roles>::insert(Role::IdleEncoder, current_encoder.clone(), ());
+							if failed.last().and_then(|x|{
+								if reuse.clone().hosters.contains(x) {Some(true)} else {None}
+							}).is_some() {
+								for remove in failed {
+									reuse.clone().hosters.iter().find(|&x| *x == remove).and_then(|&index|{
+										Some(reuse.clone().hosters.swap_remove(index as usize))
+									});
+								}
+								Self::hosting_started(reuse.clone().hosters, last_amendment);
+							} else {
+								for remove in failed {
+										reuse.clone().encoders.iter().find(|&x| *x == remove).and_then(|&index|{
+											Some(reuse.clone().encoders.swap_remove(index as usize))
+										});
 								}
 							}
+							if let Some(amendment_id) =
+							Self::make_draft_amendment(contract_id, reuse.clone()) {
+								Self::add_to_pending_amendments([amendment_id].to_vec(), None);
+								Self::try_next_amendments();
+							}
 						}
-						<GetContractByID>::insert(contract_id, contract.clone());
-						Self::give_attestors_jobs(providers.attestors.as_slice(), &mut []);
-						Self::start_challenges(contract_id, user.id);
-						Self::deposit_event(Event::HostingStarted(contract_id));
 					}
-				};
+				}
 			}
-			//todo should be economic logic, still under consideration.
+			//reward non-failed participants, 
+			// only reward attestors on first successful challenge for hosters
 		}
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
@@ -983,6 +1003,7 @@ impl<T: Trait> Module<T> {
 							amendment.providers = providers;
 							<GetAmendmentByID>::insert(amendment_id, amendment);
 							Self::deposit_event(Event::NewAmendment(amendment_id.clone()));
+							//TODO create amendment followup.
 							Ok(())
 						} else {
 							//insufficient, return to queue
@@ -1120,6 +1141,10 @@ impl<T: Trait> Module<T> {
 			.collect()
 	}
 
+	fn hosting_started(hosters: Vec<IdType>, amendment: Amendment){
+		// TODO
+	}
+
 	fn start_challenges(contract_id: IdType, hoster_id: IdType){
 		if let Some(contract) = <GetContractByID>::get(contract_id){
 			if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
@@ -1168,7 +1193,7 @@ impl<T: Trait> Module<T> {
 						}
 					)
 				} else {
-					//schedule based on plan_schedules
+					//TODO schedule based on plan_schedules
 				}
 			}
 		}
