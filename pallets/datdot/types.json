@@ -1,0 +1,75 @@
+{
+	"RoleValue": "Option<u32>",
+	"Public": "[u8; 32]",
+	"ChunkIndex": "u64",
+	"FeedId": "u32",
+	"UserId": "u32",
+	"ContractId": "u32",
+	"ChallengeId": "u32",
+	"PlanId": "u32",
+	"AttestationId": "u32",
+	"NoiseKey": "Public",
+	"FeedKey": "Public",
+	"Proof": "Public",
+	"Ranges": "Vec<(ChunkIndex, ChunkIndex)>",
+	"Nonce": "u64",
+	"Role": {
+		"_enum": ["Encoder", "Hoster", "Attestor"]
+	},
+	"User": {
+		"id": "UserId",
+		"address": "AccountId",
+		"noise_key": "Option<NoiseKey>"
+	},
+	"Feed": {
+		"id": "FeedId",
+		"publickey": "FeedKey",
+		"meta": "TreeRoot"
+	},
+	"ParentHashInRoot": {
+		"hash": "H256",
+		"hash_number": "u64",
+		"total_length": "u64"
+	},
+	"TreeRoot": {
+		"signature": "H512",
+		"hash_type": "u8",
+		"children": "Vec<ParentHashInRoot>"
+	},
+	"TreeHashPayload": {
+		"hash_type": "u8",
+		"children": "Vec<ParentHashInRoot>"
+	},
+	"Plan": {
+		"id": "PlanId",
+		"feed": "FeedId",
+		"publisher": "UserId",
+		"ranges": "Ranges<ChunkIndex>"
+	},
+	"Contract": {
+		"id": "ContractId",
+		"plan": "PlanId",
+		"ranges": "Ranges<ChunkIndex>",
+		"encoder": "UserId",
+		"hoster": "UserId"
+	},
+	"Challenge": {
+		"id": "ChallengeId",
+		"contract": "ContractId",
+		"chunks": "Vec<ChunkIndex>"
+	},
+	"Node": {
+		"index": "u64",
+		"hash": "H256",
+		"size": "u64"
+	},
+	"Attestation": {
+		"id": "AttestationId",
+		"attestor": "UserId",
+		"contract": "ContractId"
+	},
+	"Report": {
+		"location": "u8",
+		"latency": "Option<u8>"
+	}
+}
