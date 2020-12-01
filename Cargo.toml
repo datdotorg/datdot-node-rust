@@ -1,8 +1,6 @@
 [workspace]
 members = [
 	"datdot-node/pallets/datdot",
-	"datdot-node/runtime",
-	"datdot-node/node",
 	]
 
 [profile.release]
