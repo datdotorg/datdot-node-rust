@@ -97,9 +97,6 @@ pub trait Trait: system::Trait{
 	type Scheduler: ScheduleNamed<Self::BlockNumber, Self::Proposal, Self::PalletsOrigin>;
 	type PalletsOrigin: From<RawOrigin<Self::AccountId>>;
 
-	/// The currency trait.
-	type Currency: LockableCurrency<Self::AccountId>;
-
 	type Hash:
 	Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + SimpleBitOps
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;

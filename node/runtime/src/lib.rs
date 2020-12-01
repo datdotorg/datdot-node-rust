@@ -22,7 +22,9 @@ use pallet_grandpa::fg_primitives;
 use sp_version::RuntimeVersion;
 #[cfg(feature = "std")]
 use sp_version::NativeVersion;
-
+use frame_system::{
+	EnsureRoot
+};
 // A few exports that help ease life for downstream crates.
 #[cfg(any(feature = "std", test))]
 pub use sp_runtime::BuildStorage;
@@ -40,6 +42,8 @@ pub use frame_support::{
 
 /// Import the template pallet.
 pub use pallet_template;
+pub use pallet_datdot;
+
 
 /// An index to a block.
 pub type BlockNumber = u32;
@@ -261,6 +265,53 @@ impl pallet_sudo::Trait for Runtime {
 	type Call = Call;
 }
 
+parameter_types! {
+	pub MaximumSchedulerWeight: Weight = Perbill::from_percent(80) * MaximumBlockWeight::get();
+	pub const MaxScheduledPerBlock: u32 = 500;
+}
+
+impl pallet_scheduler::Trait for Runtime {
+	type Event = Event;
+	type Origin = Origin;
+	type PalletsOrigin = OriginCaller;
+	type Call = Call;
+	type MaximumWeight = MaximumBlockWeight;
+	type ScheduleOrigin = EnsureRoot<AccountId>;
+	type MaxScheduledPerBlock = MaxScheduledPerBlock;
+	type WeightInfo = ();
+}
+
+parameter_types! {
+	pub const ChallengeDelay: BlockNumber = 5;
+	pub const EncodingDuration: BlockNumber = 2;
+	pub const AttestingDuration: BlockNumber = 2;
+	pub const ContractSetSize: u64 = 10;
+	pub const ContractActivationCap: u8 = 50;
+	pub const EncodersPerContract: u8 = 3;
+	pub const HostersPerContract: u8 = 3;
+	pub const AttestorsPerContract: u8 = 1;
+	pub const PerformanceAttestorCount: u8 = 5;
+}
+
+impl pallet_datdot::Trait for Runtime {
+	type Event = Event;
+	type Hash = Hash;
+	type Randomness = RandomnessCollectiveFlip;
+	type Proposal = Call;
+	type PalletsOrigin = OriginCaller;
+	type Scheduler = Scheduler;
+	//parameter types
+	type PerformanceAttestorCount = PerformanceAttestorCount;
+	type ChallengeDelay = ChallengeDelay;
+	type EncodingDuration = EncodingDuration;
+	type AttestingDuration = AttestingDuration;
+	type ContractSetSize = ContractSetSize;
+	type ContractActivationCap = ContractActivationCap;
+	type EncodersPerContract = EncodersPerContract;
+	type HostersPerContract = HostersPerContract;
+	type AttestorsPerContract = AttestorsPerContract;
+}
+
 /// Configure the template pallet in pallets/template.
 impl pallet_template::Trait for Runtime {
 	type Event = Event;
@@ -281,6 +332,8 @@ construct_runtime!(
 		Balances: pallet_balances::{Module, Call, Storage, Config<T>, Event<T>},
 		TransactionPayment: pallet_transaction_payment::{Module, Storage},
 		Sudo: pallet_sudo::{Module, Call, Config<T>, Storage, Event<T>},
+		Scheduler: pallet_scheduler::{Module, Call, Storage, Event<T>},
+		DatVerify: pallet_datdot::{Module, Call, Storage, Event},
 		// Include the custom logic from the template pallet in the runtime.
 		TemplateModule: pallet_template::{Module, Call, Storage, Event<T>},
 	}
