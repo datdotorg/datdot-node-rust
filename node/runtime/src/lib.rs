@@ -285,6 +285,7 @@ parameter_types! {
 	pub const ChallengeDelay: BlockNumber = 5;
 	pub const EncodingDuration: BlockNumber = 2;
 	pub const AttestingDuration: BlockNumber = 2;
+	pub const AmendmentFollowupDelay: BlockNumber = 5;
 	pub const ContractSetSize: u64 = 10;
 	pub const ContractActivationCap: u8 = 50;
 	pub const EncodersPerContract: u8 = 3;
@@ -305,6 +306,7 @@ impl pallet_datdot::Trait for Runtime {
 	type ChallengeDelay = ChallengeDelay;
 	type EncodingDuration = EncodingDuration;
 	type AttestingDuration = AttestingDuration;
+	type AmendmentFollowupDelay = AmendmentFollowupDelay;
 	type ContractSetSize = ContractSetSize;
 	type ContractActivationCap = ContractActivationCap;
 	type EncodersPerContract = EncodersPerContract;

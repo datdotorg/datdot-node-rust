@@ -108,6 +108,7 @@ pub trait Trait: system::Trait{
 	type ChallengeDelay: Get<<Self as system::Trait>::BlockNumber>;
 	type EncodingDuration: Get<<Self as system::Trait>::BlockNumber>;
 	type AttestingDuration: Get<<Self as system::Trait>::BlockNumber>;
+	type AmendmentFollowupDelay: Get<<Self as system::Trait>::BlockNumber>;
 	type ContractSetSize: Get<u64>;
 	type ContractActivationCap: Get<u8>;
 	type EncodersPerContract: Get<u8>;
@@ -705,8 +706,10 @@ decl_module!{
 						ensure!(amendment == last_amendment, DatDotError::<T>::ExpiredAmendment);
 						let mut providers = last_amendment.providers.clone();
 						ensure!(providers.attestors.contains(&user.id), DatDotError::<T>::PermissionError);
-						// TODO cancel scheduled amendment followup
-						// TODO check if this can be reused for followup logic (attestor failure)
+						(contract.plan, contract_id, report.0).using_encoded(|amendment_followup_id|{
+							T::Scheduler::cancel_named(amendment_followup_id.to_vec());
+						});
+						// TODO (attestor failure)
 						let failed = report.1;
 						let mut reuse = providers.clone();
 						if failed.len() == 0 {
@@ -715,19 +718,30 @@ decl_module!{
 							// 	emit new amendment and start challenges
 							Self::hosting_started(reuse.clone().hosters, last_amendment);
 						} else {
-							if failed.last().and_then(|x|{
+							if failed.clone().last().and_then(|x|{
+								if reuse.clone().attestors.contains(x) {
+									for remove in failed.clone() {
+										&reuse.clone().attestors.iter().find(|&x| *x == remove).and_then(|&index|{
+											Some(reuse.attestors.swap_remove(index as usize))
+										});
+									}
+									None
+								} else {Some(x)}
+							}).and_then(|x|{
 								if reuse.clone().hosters.contains(x) {Some(true)} else {None}
 							}).is_some() {
-								for remove in failed {
-									reuse.clone().hosters.iter().find(|&x| *x == remove).and_then(|&index|{
-										Some(reuse.clone().hosters.swap_remove(index as usize))
+								for remove in failed.clone() {
+									&reuse.clone().hosters.iter().find(|&x| *x == remove).and_then(|&index|{
+										Some(reuse.hosters.swap_remove(index as usize))
 									});
 								}
+								// calling hosting started with a incomplete set of hosters
 								Self::hosting_started(reuse.clone().hosters, last_amendment);
+								// TODO remove contract jobs from failed
 							} else {
-								for remove in failed {
-										reuse.clone().encoders.iter().find(|&x| *x == remove).and_then(|&index|{
-											Some(reuse.clone().encoders.swap_remove(index as usize))
+								for remove in failed.clone() {
+										&reuse.clone().encoders.iter().find(|&x| *x == remove).and_then(|&index|{
+											Some(reuse.encoders.swap_remove(index as usize))
 										});
 								}
 							}
@@ -998,10 +1012,30 @@ impl<T: Trait> Module<T> {
 				if let Some(contract) = <GetContractByID>::get(amendment.contract){
 					if let Some(plan) = <GetPlanByID<T>>::get(contract.plan){
 						if let Some(providers) = Self::get_providers(plan.clone(), amendment.providers){
-							amendment.providers = providers;
+							amendment.providers = providers.clone();
 							<GetAmendmentByID>::insert(amendment_id, amendment);
 							Self::deposit_event(Event::NewAmendment(amendment_id.clone()));
-							//TODO schedule amendment followup => amendment_report with attestor failed
+							let call = Call::amendment_report((amendment_id, providers.clone().attestors));
+							providers.clone().attestors.last()
+							.and_then(|x| <GetUserByID<T>>::get(x))
+							.and_then(|attestor|{
+							let attestor_origin = RawOrigin::Signed(attestor.address);
+							// TODO - reconsider this id format (it is the same as amendment scheduling)
+							Some((plan.id, contract.id, amendment_id).using_encoded(
+								|id_bytes|{
+									T::Scheduler::schedule_named(
+										id_bytes.to_vec(),
+										DispatchTime::After(
+											T::AmendmentFollowupDelay::get()
+										),
+										None,
+										254,
+										attestor_origin.clone().into(),
+										call.into()
+									);
+								}
+							))
+							});
 							Ok(())
 						} else {
 							//insufficient, return to queue
