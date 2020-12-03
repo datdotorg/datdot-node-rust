@@ -129,8 +129,8 @@ decl_event!(
 		/// A new contract between publisher, encoder, and hoster (many contracts per plan)
 		/// (Encoder, Hoster,...)
 		NewContract(IdType),
-		/// Hosting contract started
-		HostingStarted(IdType),
+		/// Hosting contract started (contract_id, user_id)
+		HostingStarted(IdType, IdType),
 		/// New proof-of-storage challenge
 		NewStorageChallenge(IdType),
 		/// Proof-of-storage confirmed
@@ -716,7 +716,7 @@ decl_module!{
 							// 	if failed ids is empty,
 							//  immediately schedule challenges for hosters
 							// 	emit new amendment and start challenges
-							Self::hosting_started(reuse.clone().hosters, last_amendment);
+							Self::start_challenge_phase(reuse.clone().hosters, contract_id);
 						} else {
 							if failed.clone().last().and_then(|x|{
 								if reuse.clone().attestors.contains(x) {
@@ -736,7 +736,7 @@ decl_module!{
 									});
 								}
 								// calling hosting started with a incomplete set of hosters
-								Self::hosting_started(reuse.clone().hosters, last_amendment);
+								Self::start_challenge_phase(reuse.clone().hosters, contract_id);
 								// TODO remove contract jobs from failed
 							} else {
 								for remove in failed.clone() {
@@ -1173,8 +1173,14 @@ impl<T: Trait> Module<T> {
 			.collect()
 	}
 
-	fn hosting_started(hosters: Vec<IdType>, amendment: Amendment){
-		// TODO
+	fn start_challenge_phase(hosters: Vec<IdType>, contract_id: IdType){
+		if let Some(mut contract) = <GetContractByID>::get(contract_id){
+			contract.active_hosters = hosters.clone();
+			for hoster in hosters {
+				Self::deposit_event(Event::HostingStarted(contract_id.clone(), hoster));
+				Self::start_challenges(contract_id, hoster);
+			}
+		};
 	}
 
 	fn start_challenges(contract_id: IdType, hoster_id: IdType){
