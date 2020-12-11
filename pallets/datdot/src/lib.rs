@@ -83,8 +83,9 @@ use sp_arithmetic::{
 };
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
+use itertools::Itertools;
 
-type IdType = u32;
+type IdType = u32; 
 /******************************************************************************
   The module's configuration trait
 ******************************************************************************/
@@ -114,6 +115,7 @@ pub trait Trait: system::Trait{
 	type EncodersPerContract: Get<u8>;
 	type HostersPerContract: Get<u8>;
 	type AttestorsPerContract: Get<u8>;
+	type MaxSelectedPerRole: Get<u32>;
 }
 
 
@@ -520,6 +522,7 @@ decl_storage! {
 		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::AccountId, T::BlockNumber>>;
 		// ROLES ARRAY
 		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) IdType => ();
+
 	}
 }
 
@@ -581,8 +584,6 @@ decl_module!{
 			<GetNextPlanID>::put(plan_id_counter);
 			//unzip plan 
 			let contract_ids = Self::make_contracts_schedule_amendments(new_plan);
-			// for each contract ID schedule amendment (extrinsic) to execute on contract from.
-			// TODO make amendments and add to pending amendments
 			Self::deposit_event(Event::NewPlan(plan_id.clone()));
 		}
 
@@ -925,7 +926,6 @@ impl<T: Trait> Module<T> {
 				}
 			}
 		}).collect();
-		// TODO replace draft contracts with complete contracts, add hosters via amendments.
 		contract_ids
 	}
 
@@ -1053,46 +1053,97 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
+	fn get_providers_search(
+		plan: Plan<T::BlockNumber>,
+		roles_remain: &mut Vec<(Role, usize)>,
+		providers_found: &mut Providers,
+		temp_avoid: &mut Vec<u32>
+	) -> Option<Providers> {
+		let mut providers_result = Some(providers_found.clone());
+		if let Some((current_role, amount_required)) = roles_remain.pop(){
+			let mut next_avoid = temp_avoid.clone();
+			let mut select_vec = Self::select_iter(current_role.clone(), |(x, _)|{
+				let pass = Self::does_qualify(&plan, x, current_role.clone());
+				//TODO soft qualify/deprioritize poor matches
+				if pass {
+					next_avoid.push(x.clone());
+				} 
+				pass
+			});
+			let perm_iter = select_vec.iter().permutations(amount_required); 
+			// TODO: permutation requires a sized iterator
+			for permutation in perm_iter {
+				let mut next_providers_found = providers_found.clone();
+				match current_role.clone() {
+					IdleEncoder => {
+						next_providers_found.encoders.append(&mut permutation.clone().iter().map(|&x|*x).collect());
+					},
+					IdleHoster => {
+						next_providers_found.hosters.append(&mut permutation.clone().iter().map(|&x|*x).collect());
+					},
+					IdleAttestor => {
+						next_providers_found.attestors.append(&mut permutation.clone().iter().map(|&x|*x).collect());
+					},
+					_ => {}
+				};
+				let providers = Self::get_providers_search(
+					plan.clone(),
+					&mut roles_remain.clone(),
+					&mut next_providers_found,
+					&mut next_avoid.clone()
+				);
+				if let Some(down) = providers {
+					providers_result = Some(down);
+					break;
+				} else {
+					providers_result = None;
+				}
+			}
+		}
+		providers_result
+	}
+
+	// TODO - GOAL: make sure optimal providers are selected so that we maximize the number of providers
+	// either search through possible "next providers" with a heuristic
+	// or use offchain worker to do heavy computation
+	// or just loop n times
+	// or prioritize specialized
+	// avoid being "strategizable"
 	fn get_providers(plan: Plan<T::BlockNumber>, reused: Providers) -> Option<Providers> {
 		let mut avoid = Self::make_avoid(&plan);
 		avoid.append(&mut reused.encoders.clone());
 		avoid.append(&mut reused.hosters.clone());
 		avoid.append(&mut reused.attestors.clone());
-		let mut attestors = Self::select(Role::IdleAttestor, T::AttestorsPerContract::get().into(), |(x,_)|{
-			(!avoid.contains(x)) && Self::doesQualify(&plan, x, Role::IdleAttestor)
-		});
-		avoid.append(&mut attestors.clone());
-		if attestors.len() < T::AttestorsPerContract::get() as usize - reused.attestors.len() {
-			return None 
-		} else {
-			let mut hosters = Self::select(Role::IdleHoster, T::HostersPerContract::get().into(), |(x,_)|{
-				(!avoid.contains(x)) && Self::doesQualify(&plan, x, Role::IdleHoster)
-			});
-			avoid.append(&mut hosters.clone());
-			if hosters.len() < T::HostersPerContract::get() as usize - reused.hosters.len() { 
-				return None 
+		// calculate the number of providers required for each role
+		let required_encoders = T::EncodersPerContract::get() as usize - reused.encoders.len();
+		let required_hosters = T::HostersPerContract::get() as usize - reused.encoders.len();
+		let required_attestors = T::AttestorsPerContract::get() as usize - reused.encoders.len();
+		// create an array containing a role:number mapping
+		let mut roles_required = 
+			[
+				(Role::IdleHoster, required_hosters),
+				(Role::IdleEncoder, required_encoders),
+				(Role::IdleAttestor, required_attestors)
+			].to_vec();
+		if let Some(found_providers) = Self::get_providers_search(
+			plan,
+			&mut roles_required.clone(),
+			&mut Providers::default(),
+			&mut avoid.clone()
+		){
+			if found_providers.encoders.len() != T::EncodersPerContract::get() as usize 
+			|| found_providers.hosters.len() != T::HostersPerContract::get() as usize
+			|| found_providers.attestors.len() != T::AttestorsPerContract::get() as usize {
+				None
 			} else {
-				let mut encoders = Self::select(Role::IdleEncoder, T::EncodersPerContract::get().into(), |(x,_)|{
-					(!avoid.contains(x)) && Self::doesQualify(&plan, x, Role::IdleEncoder)
-				});
-				avoid.append(&mut encoders.clone());
-				if encoders.len() < T::EncodersPerContract::get() as usize - reused.encoders.len() { 
-					return None 
-				} else {
-					encoders.append(&mut reused.encoders.clone());
-					hosters.append(&mut reused.hosters.clone());
-					attestors.append(&mut reused.attestors.clone());
-					Some(Providers {
-						encoders: encoders,
-						hosters: hosters,
-						attestors: attestors
-					})
-				}
+				Some(found_providers)
 			}
+		} else {
+			None
 		}
 	}
 
-	fn doesQualify(plan: &Plan<T::BlockNumber>, user_id: &IdType, role: Role)->bool{
+	fn does_qualify(plan: &Plan<T::BlockNumber>, user_id: &IdType, role: Role)->bool{
 		if let Some(user) = <GetUserByID<T>>::get(user_id){
 			let user_role = match role {
 				Role::IdleAttestor | Role::Attestor => user.attestor,
@@ -1169,6 +1220,13 @@ impl<T: Trait> Module<T> {
 		<Roles>::iter_prefix(select_role)
 			.filter(|(x, y)|{select_function((x, y))})
 			.take(select_amount)
+			.map(|(x, _)|x)
+			.collect()
+	}
+
+	fn select_iter<'a>(select_role: Role, mut select_function: impl FnMut((&IdType, &())) -> bool + 'a) -> Vec<IdType> {
+		<Roles>::iter_prefix(select_role)
+			.filter(|(x, y)|{select_function((x, y))})
 			.map(|(x, _)|x)
 			.collect()
 	}
@@ -1259,6 +1317,7 @@ impl<T: Trait> Module<T> {
 		<GetUserByKey<T>>::insert(user.clone().address, user.clone());
 	}
 
+	//TODO consider using select here as well
 	fn give_attestors_jobs(
 		attestors: &[IdType],
 		jobs: &mut [JobId]
@@ -1285,6 +1344,7 @@ impl<T: Trait> Module<T> {
 								challenge.attestors = Some(performance_attestors);
 								<GetPerformanceChallengeByID>::insert(&challenge_id, challenge);
 							}
+							// TODO Give atttestors jobs
 							Self::deposit_event(Event::NewPerformanceChallenge(challenge_id.clone()));
 							break;
 						}
@@ -1297,6 +1357,7 @@ impl<T: Trait> Module<T> {
 							challenge.attestor = Some(attestor.0);
 							<GetChallengeByID>::insert(&challenge_id, challenge);
 						}
+						//TODO give attestor job
 						Self::deposit_event(Event::NewStorageChallenge(challenge_id.clone()));
 						break;
 					}

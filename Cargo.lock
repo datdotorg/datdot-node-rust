@@ -3791,6 +3791,7 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
+ "itertools 0.9.0",
  "parity-scale-codec",
  "rand_chacha 0.2.2",
  "serde",
