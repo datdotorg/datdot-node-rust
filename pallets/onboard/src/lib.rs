@@ -84,7 +84,7 @@ decl_module!{
 
 
 		#[weight = (0, Normal, Pays::No)]
-		pub fn begin_create_account(
+		pub fn create_account(
 			origin,
 			new_account_pubkey: T::AccountId,
 			referrer_option: Option<T::AccountId>,
@@ -105,6 +105,7 @@ decl_module!{
 						T::CreateAmount::get()
 					);
 				}
+				system::Module::<T>::inc_ref(&new_account_pubkey);
 				T::UnderlyingCurrency::deposit_creating(&new_account_pubkey, T::CreateAmount::get());
 				T::UnderlyingCurrency::set_lock(
 					*b"only4fee", 
@@ -125,7 +126,7 @@ impl<T: Config> frame_support::unsigned::ValidateUnsigned for Module<T> {
 	type Call = Call<T>;
 	fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
 		match call {
-			Call::begin_create_account(new_account, _, pow) => {
+			Call::create_account(new_account, _, pow) => {
 				if T::PowVerifier::verify(new_account.clone(), pow.clone()) {
 					Ok(Default::default())
 				} else {
