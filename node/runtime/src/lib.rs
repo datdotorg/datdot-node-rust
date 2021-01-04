@@ -292,6 +292,7 @@ parameter_types! {
 	pub const HostersPerContract: u8 = 3;
 	pub const AttestorsPerContract: u8 = 1;
 	pub const PerformanceAttestorCount: u8 = 5;
+	pub const MaxSelectedPerRole: u32 = 300;
 }
 
 impl pallet_datdot::Trait for Runtime {
@@ -312,6 +313,7 @@ impl pallet_datdot::Trait for Runtime {
 	type EncodersPerContract = EncodersPerContract;
 	type HostersPerContract = HostersPerContract;
 	type AttestorsPerContract = AttestorsPerContract;
+	type MaxSelectedPerRole = MaxSelectedPerRole;
 }
 
 /// Configure the template pallet in pallets/template.

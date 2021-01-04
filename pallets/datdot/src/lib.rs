@@ -7,9 +7,9 @@ use sp_std::prelude::*;
 use sp_std::fmt::Debug;
 use sp_std::collections::btree_map::BTreeMap;
 use sp_std::collections::btree_set::BTreeSet;
-use sp_std::iter::ExactSizeIterator;
 use sp_std::iter::Take;
 use sp_std::cmp::Ordering;
+use sp_std::boxed::Box;
 use frame_support::{
 	decl_module,
 	decl_storage,
@@ -83,9 +83,15 @@ use sp_arithmetic::{
 };
 use rand_chacha::{rand_core::{RngCore, SeedableRng}, ChaChaRng};
 use ed25519::{Public, Signature};
-use itertools::Itertools;
+use itertools::{cloned};
 
 type IdType = u32; 
+
+// todo extract into it's own microcrate
+/// K permutations of N
+fn iter_permutations<'a, T>(k: usize, n_from: Box<Iterator<Item = T>>) -> Box<Iterator<Item = Vec<T>>> {
+ todo!()
+}
 /******************************************************************************
   The module's configuration trait
 ******************************************************************************/
@@ -187,7 +193,6 @@ pub struct Form<Time> {
 	from: Time,
 	until: Option<Time>,
 	schedules: Vec<Schedule<Time>>,
-	config: Config,
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
@@ -214,7 +219,8 @@ type FeedKey = Public;
 struct Feed {
 	id: IdType,
 	publickey: FeedKey,
-	meta: TreeRoot,
+	version: BTreeMap<u64, H512>,
+	size: BTreeMap<u64, u64>,
 	publisher: IdType
 }
 
@@ -255,21 +261,14 @@ pub struct FeedInPlan<B>{
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
-pub struct Plan<Time> {
+pub struct Plan<AccountId, Time> {
 	id: IdType,
-	feeds: Vec<FeedInPlan<Ranges<u64>>>,
+	components: Vec<MaybeItem<AccountId, Time>>,
 	from: Time,
 	until: PlanUntil<Time>,
-	importance: u8,
-	config: Config,
-	schedules: Vec<Schedule<Time>>,
+	program: Vec<Vec<IdType>>,
 	sponsor: IdType,
 	contracts: Vec<IdType>
-}
-
-struct Expirable<Item, Time> {
-	inner: Item,
-	expires: Time
 }
 
 #[derive(Decode, PartialEq, Eq, Encode, Clone, Default, RuntimeDebug)]
@@ -461,19 +460,12 @@ pub struct Performance {
 
 pub type Region = Vec<u8>;
 
-#[derive(Decode, Default, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
-pub struct Config {
-	performance: Performance,
-	regions: Vec<(Region, Performance)>
-}
-
 #[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
 pub struct Schedule<Time> {
 	duration: Time,
 	delay: Time,
-	interval: Time,
-	repeat: u32,
-	config: Config
+	pause: Time,
+	repeat: u32
 }
 
 // (number of attestors required, job id)
@@ -492,6 +484,39 @@ pub enum ChallengeType {
 	PerformanceChallenge
 }
 
+
+#[derive(Decode, PartialEq, Eq, Encode, Clone, RuntimeDebug)]
+pub enum MaybeItem<AccountId, Time> {
+	Feed(Feed),
+	Performance(Performance),
+	Schedule(Schedule<Time>),
+	Region(Region),
+	User(User<AccountId, Time>),
+	Contract(Contract),
+	Amendment(Amendment),
+	StorageChallenge(StorageChallenge),
+	PerformanceChallenge(PerformanceChallenge),
+	Plan(Plan),
+	Empty
+}
+
+impl MaybeItem {
+	fn is_mutable(&self) -> bool{
+		match &self {
+			Self::Contract => true,
+			Self::Plan => true,
+			Self::User => true,
+			_ => false
+		}
+	}
+}
+
+impl Default for MaybeItem {
+	fn default() -> Self {
+		MaybeItem::Empty
+	}
+}
+
 /******************************************************************************
   Storage items/db
 ******************************************************************************/
@@ -499,28 +524,17 @@ pub enum ChallengeType {
 decl_storage! {
 	trait Store for Module<T: Trait> as DatVerify{
 		// PUBLIC/API
-		pub GetFeedByID: map hasher(twox_64_concat) IdType => Option<Feed>;
+		pub GetItemByID: map hasher(twox_64_concat) IdType => MaybeItem;
 		pub GetFeedByKey: map hasher(twox_64_concat) FeedKey => Option<Feed>;
-        pub GetUserByID: map hasher(twox_64_concat) IdType => Option<User<T::AccountId, T::BlockNumber>>;
-		pub GetContractByID: map hasher(twox_64_concat) IdType => Option<Contract>;
-		pub GetAmendmentByID: map hasher(twox_64_concat) IdType => Option<Amendment>;
-        pub GetChallengeByID: map hasher(twox_64_concat) IdType => Option<StorageChallenge>;
-		pub GetPlanByID: map hasher(twox_64_concat) IdType => Option<Plan<T::BlockNumber>>;
-		pub GetPerformanceChallengeByID: map hasher(twox_64_concat) IdType => Option<PerformanceChallenge>;
-		// INTERNALLY REQUIRED STORAGE
-		pub GetNextFeedID: IdType;
-		pub GetNextUserID: IdType;
-		pub GetNextContractID: IdType;
-		pub GetNextAmendmentID: IdType;
-		pub GetNextChallengeID: IdType;
-		pub GetNextPlanID: IdType;
-		pub GetNextAttestationID: IdType;
-		pub Nonce: u64;
+		pub GetImmutable: map hasher(blake2_128_concat) MaybeItem => Option<IdType>;
+        // INTERNALLY REQUIRED STORAGE
+		pub GetNextItemID: IdType;
+		pub RandomNonce: u64;
 		pub GetJobIdQueue: Vec<JobId>;
 		pub PendingAmendments: Vec<IdType>;
 		// LOOKUPS (created as neccesary)
 		pub GetUserByKey: map hasher(twox_64_concat) T::AccountId => Option<User<T::AccountId, T::BlockNumber>>;
-		// ROLES ARRAY
+		// ROLES ARRAY (TODO remove-use scoredpools or equivalent)
 		pub Roles: double_map hasher(twox_64_concat) Role, hasher(twox_64_concat) IdType => ();
 
 	}
@@ -540,6 +554,16 @@ decl_module!{
 		const PerformanceAttestorCount : u8 = T::PerformanceAttestorCount::get();
 
 		#[weight = (100000, Operational, Pays::No)] //todo weight
+		fn register_user(origin){
+			let sponsor_address = ensure_signed(origin)?;
+			let user = Self::load_user(sponsor_address);
+			//TODO micro-POW (be a provider for 5m?)
+			//that gives users a minimal amount of tokens that allows them to
+			//use the rest of the chain
+
+		}
+
+		#[weight = (100000, Operational, Pays::No)] //todo weight
 		fn publish_feed(origin, merkle_root: (Public, TreeHashPayload, H512)){
 			let publisher_address = ensure_signed(origin)?;
 			let user = Self::load_user(publisher_address);
@@ -547,7 +571,7 @@ decl_module!{
 				// if a feed is already published, emit error here.
 			} else {
 				let feed_id : IdType;
-				let next_feed_id = <GetNextFeedID>::get();
+				let next_feed_id = <GetNextItemID>::get();
 				//TODO feed.ranges from?
 				let new_feed = Feed {
 					id: next_feed_id.clone(),
@@ -559,11 +583,11 @@ decl_module!{
 					},
 					publisher: user.id
 				};
-				<GetFeedByID>::insert(next_feed_id, new_feed.clone());
+				<GetItemByID>::insert(next_feed_id, new_feed.clone());
 				<GetFeedByKey>::insert(merkle_root.0, new_feed.clone());
 				feed_id = next_feed_id.clone();
 				let feed_id_counter : IdType = next_feed_id+1;
-				<GetNextFeedID>::put(feed_id_counter);
+				<GetNextItemID>::put(feed_id_counter);
 				Self::deposit_event(Event::NewFeed(feed_id));
 			}
 		}
@@ -595,7 +619,7 @@ decl_module!{
 
 		#[weight = (100000, Operational, Pays::No)]
 		fn scheduled_amendment(origin, contract_id: IdType){
-			//todo origins
+			//todo origins 
 			if let Some(amendment_id) =
 			Self::make_draft_amendment(contract_id, Providers::default()) {
 				Self::add_to_pending_amendments([amendment_id].to_vec(), None);
@@ -901,7 +925,7 @@ impl<T: Trait> Module<T> {
 
 	fn make_contracts(plan: Plan<T::BlockNumber>) -> Vec<IdType> {
 		let mut contract_ids: Vec<IdType> = plan.feeds.iter().flat_map(|feed_struct|{
-			let feed_opt: Option<Feed> = <GetFeedByID>::get(feed_struct.id);
+			let feed_opt: Option<Feed> = <GetItemByID>::get(feed_struct.id);
 			match feed_opt {
 				Some(feed) => {
 					let sets = Self::split_main(feed_struct.clone().ranges);
@@ -1061,28 +1085,29 @@ impl<T: Trait> Module<T> {
 	) -> Option<Providers> {
 		let mut providers_result = Some(providers_found.clone());
 		if let Some((current_role, amount_required)) = roles_remain.pop(){
-			let mut next_avoid = temp_avoid.clone();
-			let mut select_vec = Self::select_iter(current_role.clone(), |(x, _)|{
+			let (select_vec_box, next_avoid_box) = Self::select_iter(current_role.clone(), Box::new(
+				|&(x, y): (&IdType, Box<&mut Vec<u32>>)|{
 				let pass = Self::does_qualify(&plan, x, current_role.clone());
 				//TODO soft qualify/deprioritize poor matches
 				if pass {
-					next_avoid.push(x.clone());
+					y.push(x.clone());
 				} 
 				pass
-			});
-			let perm_iter = select_vec.iter().permutations(amount_required); 
-			// TODO: permutation requires a sized iterator
+			}), 
+			Box::new(temp_avoid.clone()));
+			let (select_vec, next_avoid) = (Box::leak(select_vec_box), Box::leak(next_avoid_box));
+			let perm_iter = Box::leak(iter_permutations::<IdType>(amount_required, Box::new(select_vec)));
 			for permutation in perm_iter {
 				let mut next_providers_found = providers_found.clone();
 				match current_role.clone() {
 					IdleEncoder => {
-						next_providers_found.encoders.append(&mut permutation.clone().iter().map(|&x|*x).collect());
+						next_providers_found.encoders.append(&mut permutation.clone());
 					},
 					IdleHoster => {
-						next_providers_found.hosters.append(&mut permutation.clone().iter().map(|&x|*x).collect());
+						next_providers_found.hosters.append(&mut permutation.clone());
 					},
 					IdleAttestor => {
-						next_providers_found.attestors.append(&mut permutation.clone().iter().map(|&x|*x).collect());
+						next_providers_found.attestors.append(&mut permutation.clone());
 					},
 					_ => {}
 				};
@@ -1099,6 +1124,7 @@ impl<T: Trait> Module<T> {
 					providers_result = None;
 				}
 			}
+		
 		}
 		providers_result
 	}
@@ -1209,7 +1235,7 @@ impl<T: Trait> Module<T> {
 		let mut avoid = Vec::new();
 		avoid.push(plan.sponsor);
 		for feed_struct in &plan.feeds {
-			if let Some(feed) = <GetFeedByID>::get(feed_struct.id){
+			if let Some(feed) = <GetItemByID>::get(feed_struct.id){
 				avoid.push(feed.publisher.clone());
 			}
 		}
@@ -1224,11 +1250,14 @@ impl<T: Trait> Module<T> {
 			.collect()
 	}
 
-	fn select_iter<'a>(select_role: Role, mut select_function: impl FnMut((&IdType, &())) -> bool + 'a) -> Vec<IdType> {
-		<Roles>::iter_prefix(select_role)
-			.filter(|(x, y)|{select_function((x, y))})
+	fn select_iter<F>(select_role: Role, mut select_function: Box<F>, avoids: Box<&mut Vec<u32>>) -> (Box<Iterator<Item = IdType> + '_>, Box<&mut Vec<IdType>>)
+	where F: FnMut(&(IdType, Box<&mut Vec<IdType>>)) -> bool {
+		(Box::new(<Roles>::iter_prefix(select_role)
+			.map(|(x, _)|(x, avoids))
+			.filter(Box::leak(select_function))
 			.map(|(x, _)|x)
-			.collect()
+			.into_iter()),
+		avoids)
 	}
 
 	fn start_challenge_phase(hosters: Vec<IdType>, contract_id: IdType){
@@ -1317,6 +1346,10 @@ impl<T: Trait> Module<T> {
 		<GetUserByKey<T>>::insert(user.clone().address, user.clone());
 	}
 
+	load_immutable_item(item: MaybeItem) -> IdType {
+		
+	}
+
 	//TODO consider using select here as well
 	fn give_attestors_jobs(
 		attestors: &[IdType],
@@ -1402,8 +1435,8 @@ impl<T: Trait> Module<T> {
 	// ---
 
 	fn unique_nonce() -> u64 {
-		let nonce : u64 = <Nonce>::get();
-		<Nonce>::put(nonce+1);
+		let nonce : u64 = <RandomNonce>::get();
+		<RandomNonce>::put(nonce+1);
 		nonce
 	}
 

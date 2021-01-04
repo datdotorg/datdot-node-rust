@@ -1,6 +1,6 @@
 [workspace]
 members = [
-	"pallets/datdot",
+	"pallets/*",
 	'node/node',
     'node/pallets/*',
     'node/runtime',
