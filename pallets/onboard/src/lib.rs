@@ -26,46 +26,28 @@ Unsigned Calls:
 pub mod traits;
 
 use sp_std::prelude::*;
-use sp_std::marker::PhantomData;
-use sp_std::fmt::Debug;
-use sp_std::convert::TryInto;
-use frame_support::{IsSubType, debug::native, decl_error, decl_event, decl_module, decl_storage, dispatch::{DispatchInfo, DispatchResult, PostDispatchInfo}, ensure, fail, storage::{
-		StorageMap,
-		StorageValue,
-		IterableStorageMap,
-		IterableStorageDoubleMap,
-	}, traits::{
+
+
+
+use frame_support::{decl_error, decl_event, decl_module, fail, traits::{
 		Currency,
 		Get, 
 		LockableCurrency,
 		WithdrawReason, 
 		WithdrawReasons,
-	}, unsigned::{TransactionSource, TransactionValidityError}, weights::{
+	}, unsigned::{TransactionSource}, weights::{
 		Pays,
 		DispatchClass::{
 			Normal,
-			Operational,
 		},
-		WeighData,
-		ClassifyDispatch,
 	}};
 use frame_system::{
 	self as system,
-	ensure_signed,
-	ensure_root,
 	ensure_none,
-	RawOrigin
 };
-use codec::{
-	Encode,
-	Decode,
-	Codec,
-	EncodeLike
-};
-use sp_runtime::{Either, Percent, traits::{Bounded, DispatchInfoOf, Dispatchable, PostDispatchInfoOf, Saturating, SignedExtension, Zero}, transaction_validity::{InvalidTransaction, TransactionValidity, ValidTransaction}};
-use sp_arithmetic::{
-	FixedPointOperand
-};
+
+use sp_runtime::{Either, Percent, traits::{Zero}, transaction_validity::{InvalidTransaction, TransactionValidity}};
+
 
 use traits::PowVerifier;
 use pallet_eden::traits::InterceptableReward;
@@ -85,22 +67,13 @@ pub trait Config: system::Trait{
 decl_event!(
 	pub enum Event<T> 
 	where <T as system::Trait>::AccountId {
-		OnboardStarted(AccountId, Option<AccountId>),
-		OnboardComplete(AccountId),
-		OnboardExpired(AccountId, AccountId),
+		OnboardComplete(AccountId, Option<AccountId>),
     }
 );
 
 decl_error! {
 	pub enum OnboardError for Module<T: Config> {
 		AlreadyOnboarded
-    }
-}
-
-
-decl_storage! {
-	trait Store for Module<T: Config> as Onboard{
-		pub Claimable: map hasher(twox_64_concat) T::AccountId => (T::BlockNumber, T::BlockNumber);
     }
 }
 
@@ -119,8 +92,7 @@ decl_module!{
 		){
 			// if onboarding has already happened or is in progress.
 			ensure_none(origin)?;
-			if T::UnderlyingCurrency::free_balance(&new_account_pubkey) > Zero::zero() ||
-			   <Claimable<T>>::contains_key(&new_account_pubkey)
+			if T::UnderlyingCurrency::free_balance(&new_account_pubkey) > Zero::zero()
 			{
 				fail!(OnboardError::<T>::AlreadyOnboarded);
 			} else {
@@ -141,7 +113,7 @@ decl_module!{
 					WithdrawReasons::except(WithdrawReason::Transfer)
 				);
 				Self::deposit_event(
-					Event::<T>::OnboardComplete(new_account_pubkey)
+					Event::<T>::OnboardComplete(new_account_pubkey, referrer_option)
 				);
 			}
 		}
