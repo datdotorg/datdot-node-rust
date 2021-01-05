@@ -24,8 +24,11 @@ Unsigned Calls:
 **/
 
 pub mod traits;
+pub mod pow;
 
+use codec::{Decode, Encode};
 use sp_std::prelude::*;
+use sp_std::fmt::Debug;
 
 
 
@@ -57,7 +60,9 @@ pub trait Config: system::Trait{
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 	type UnderlyingCurrency: Currency<Self::AccountId> + LockableCurrency<Self::AccountId>;
 	type InterceptedReward: InterceptableReward<Self::AccountId, Self::UnderlyingCurrency>;
-	type PowVerifier: PowVerifier<Self::AccountId>;
+	type PowType: Copy + Encode + Decode + Debug 
+		+ PartialEq + Eq + From<Self::PowType> + Into<Self::PowType>;
+	type PowVerifier: PowVerifier<Self::AccountId, Self::PowType>;
 	type MandatoryDelay: Get<<Self as system::Trait>::BlockNumber>;
 	type ClaimExpiry: Get<<Self as system::Trait>::BlockNumber>;
 	type CreateAmount:  Get<BalanceOf<Self>>;
@@ -88,7 +93,7 @@ decl_module!{
 			origin,
 			new_account_pubkey: T::AccountId,
 			referrer_option: Option<T::AccountId>,
-			pow: Vec<u8>
+			pow: T::PowType
 		){
 			// if onboarding has already happened or is in progress.
 			ensure_none(origin)?;
@@ -127,7 +132,7 @@ impl<T: Config> frame_support::unsigned::ValidateUnsigned for Module<T> {
 	fn validate_unsigned(_source: TransactionSource, call: &Self::Call) -> TransactionValidity {
 		match call {
 			Call::create_account(new_account, _, pow) => {
-				if T::PowVerifier::verify(new_account.clone(), pow.clone()) {
+				if T::PowVerifier::verify(new_account.clone(), pow.clone().into()) {
 					Ok(Default::default())
 				} else {
 					InvalidTransaction::BadProof.into()
