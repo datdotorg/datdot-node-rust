@@ -19,40 +19,46 @@ Traits/Config:
     CreateAmount - const, the amount created (locked), in an account.
 
 Unsigned Calls: 
- `begin_create_account(origin, new_account_pubkey, referrer_option, pow)` - create a new account with enough balance - locked to only be spendable for fees - to begin participating in the network, ensure_unsigned is used to ensure that the origin is not an existing account. We ensure, referrer exists if provided, and new_account does not exist, and then verify PoW.
- `end_create_account(origin, new_account_pubkey)` - after MandatoryDelay, `new_account_pubkey` receives it's balance. If ClaimExpiry has passed, origin receives a fraction of the balance instead. the claim is removed.
-**/
+ `create_account(origin, new_account_pubkey, referrer_option, pow)` - create a new account with enough balance - locked to only be spendable for fees - to begin participating in the network, ensure_unsigned is used to ensure that the origin is not an existing account. We ensure, referrer exists if provided, and new_account does not exist, and then verify PoW.
+ `clean(origin)` - withdraw CreateAmount balance from an account, remove the balance lock, and dec_ref - for use after an account is onboarded elsewhere in the chain and no longer wants a part of their balance locked for fees.
+ **/
 
 pub mod traits;
 pub mod pow;
-
+pub mod weights;
 use codec::{Decode, Encode};
 use sp_std::prelude::*;
 use sp_std::fmt::Debug;
-
-
-
-use frame_support::{decl_error, decl_event, decl_module, fail, traits::{
-		Currency,
+use frame_support::{
+	decl_error,
+	decl_event, 
+	decl_module, 
+	error::BadOrigin, 
+	fail, 
+	traits::{
+		Currency, 
+		ExistenceRequirement, 
 		Get, 
-		LockableCurrency,
+		LockableCurrency, 
 		WithdrawReason, 
-		WithdrawReasons,
-	}, unsigned::{TransactionSource}, weights::{
-		Pays,
-		DispatchClass::{
-			Normal,
-		},
-	}};
+		WithdrawReasons
+	}, 
+	transactional, 
+	unsigned::{
+		TransactionSource
+	}
+};
 use frame_system::{
 	self as system,
 	ensure_none,
+	ensure_signed,
 };
 
-use sp_runtime::{Either, Percent, traits::{Zero}, transaction_validity::{InvalidTransaction, TransactionValidity}};
+use sp_runtime::{DispatchError, Either, Percent, traits::{Zero}, transaction_validity::{InvalidTransaction, TransactionValidity}};
 
 
 use traits::PowVerifier;
+use weights::WeightInfo;
 use pallet_eden::traits::InterceptableReward;
 
 type BalanceOf<T> = <<T as Config>::UnderlyingCurrency as Currency<<T as system::Trait>::AccountId>>::Balance;
@@ -67,6 +73,8 @@ pub trait Config: system::Trait{
 	type ClaimExpiry: Get<<Self as system::Trait>::BlockNumber>;
 	type CreateAmount:  Get<BalanceOf<Self>>;
 	type InterceptedPercent: Get<Percent>;
+	type LockIdentifier: Get<[u8; 8]>;
+	type WeightInfo: WeightInfo;
 }
 
 decl_event!(
@@ -78,7 +86,8 @@ decl_event!(
 
 decl_error! {
 	pub enum OnboardError for Module<T: Config> {
-		AlreadyOnboarded
+		AlreadyOnboarded,
+		UnlockFailed
     }
 }
 
@@ -88,7 +97,7 @@ decl_module!{
 		type Error = OnboardError<T>;
 
 
-		#[weight = (0, Normal, Pays::No)]
+		#[weight = T::WeightInfo::create_account()]
 		pub fn create_account(
 			origin,
 			new_account_pubkey: T::AccountId,
@@ -113,7 +122,7 @@ decl_module!{
 				system::Module::<T>::inc_ref(&new_account_pubkey);
 				T::UnderlyingCurrency::deposit_creating(&new_account_pubkey, T::CreateAmount::get());
 				T::UnderlyingCurrency::set_lock(
-					*b"only4fee", 
+					T::LockIdentifier::get(), 
 					&new_account_pubkey, 
 					T::CreateAmount::get(), 
 					WithdrawReasons::except(WithdrawReason::Transfer)
@@ -122,6 +131,36 @@ decl_module!{
 					Event::<T>::OnboardComplete(new_account_pubkey, referrer_option)
 				);
 			}
+		}
+
+		#[weight = T::WeightInfo::clean()]
+		#[transactional]
+		pub fn clean(origin) -> Result<(), DispatchError> {
+			let account_result = ensure_signed(origin);
+			//TODO consider not withdrawing entire amount
+			//we might want to incentivise cleaning state
+			//TODO withdraw reasons
+			match account_result {
+				Ok(account) => {
+					match T::UnderlyingCurrency::withdraw(
+						&account, 
+						T::CreateAmount::get(), 
+						WithdrawReasons::none(), 
+						ExistenceRequirement::AllowDeath
+					){
+						Ok(_) => {
+							T::UnderlyingCurrency::remove_lock(T::LockIdentifier::get(), &account);
+							system::Module::<T>::dec_ref(&account);
+							Ok(())
+						},
+						_ => {
+							Err(OnboardError::<T>::UnlockFailed.into())
+						}
+					}
+				},
+				_ => Err(BadOrigin.into())
+			}
+		// Ok(())
 		}
 	}
 }

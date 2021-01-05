@@ -503,6 +503,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "blake2b-pow"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b17808b7d62a8dbd3660a3bf4ee4484034f13974d6028d2352a53ac56f0f0486"
+dependencies = [
+ "blake2-rfc",
+]
+
+[[package]]
 name = "blake2b_simd"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3878,6 +3887,7 @@ dependencies = [
 name = "pallet-onboard"
 version = "2.0.0"
 dependencies = [
+ "blake2b-pow",
  "frame-benchmarking",
  "frame-support",
  "frame-system",
