@@ -72,7 +72,7 @@ use sp_runtime::{DispatchError, Either, Percent, traits::{Zero}, transaction_val
 
 use traits::PowVerifier;
 use weights::WeightInfo;
-use pallet_eden::traits::InterceptableReward;
+use pallet_eden::traits::{InterceptableReward, Intercepted, Destination};
 
 type BalanceOf<T> = <<T as Config>::UnderlyingCurrency as Currency<<T as system::Trait>::AccountId>>::Balance;
 pub trait Config: system::Trait{
@@ -125,11 +125,18 @@ decl_module!{
 			} else {
 				// if referrer exists, add intercept to repay their PoW
 				if let Some(referrer) = referrer_option.clone() {
+					let reward_destination = 
+					Destination::<
+						T::AccountId,
+						<T::UnderlyingCurrency as Currency<T::AccountId>>::Balance
+					>{
+						destination: referrer,
+						proportion: T::InterceptedPercent::get(),
+						amount: T::CreateAmount::get().into()
+					};
 					T::InterceptedReward::add_intercept(
-						Either::<T::AccountId, Vec<u8>>::Left(new_account_pubkey.clone()),
-						referrer,
-						T::InterceptedPercent::get(),
-						T::CreateAmount::get()
+						Intercepted::Account(new_account_pubkey.clone()),
+						reward_destination
 					);
 				}
 				system::Module::<T>::inc_ref(&new_account_pubkey);
