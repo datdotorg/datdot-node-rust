@@ -72,7 +72,7 @@ use sp_runtime::{DispatchError, Either, Percent, traits::{Zero}, transaction_val
 
 use traits::PowVerifier;
 use weights::WeightInfo;
-use pallet_eden::traits::{InterceptableReward, Intercepted, Destination};
+use pallet_eden::interception::{InterceptableReward, Intercepted, Destination};
 
 type BalanceOf<T> = <<T as Config>::UnderlyingCurrency as Currency<<T as system::Trait>::AccountId>>::Balance;
 pub trait Config: system::Trait{
@@ -130,7 +130,7 @@ decl_module!{
 						T::AccountId,
 						<T::UnderlyingCurrency as Currency<T::AccountId>>::Balance
 					>{
-						destination: referrer,
+						destination: Intercepted::Account(referrer),
 						proportion: T::InterceptedPercent::get(),
 						amount: T::CreateAmount::get().into()
 					};
