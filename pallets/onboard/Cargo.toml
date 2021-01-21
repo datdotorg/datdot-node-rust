@@ -21,7 +21,7 @@ sp-std = { version = "2.0.0", default-features = false }
 sp-io = { version = "2.0.0", default-features = false }
 sp-core = { version = "2.0.0", default-features = false }
 sp-arithmetic = { version = "2.0.0", default-features = false }
-pallet-eden = { version = "2.0.0", default-features = false, path = "../eden/" }
+pallet-orchard = { version = "2.0.0", default-features = false, path = "../orchard/" }
 blake2b-pow = { version = "0.1.0" }
 
 frame-benchmarking = { version = "2.0.0", default-features = false, optional = true }
@@ -39,6 +39,6 @@ std = [
 	"sp-core/std",
 	"sp-arithmetic/std",
 	"sp-std/std",
-	"pallet-eden/std"
+	"pallet-orchard/std"
 ]
 runtime-benchmarks = ["frame-benchmarking"]

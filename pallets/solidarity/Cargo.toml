@@ -6,7 +6,7 @@ edition = "2018"
 license = "Unlicense"
 homepage = "https://playproject.io"
 repository = "https://github.com/playproject-io/datdot-substrate"
-description = "Datdot Substrate Pallet - Solidarity payments as part of rewards, depends on pallet-eden"
+description = "Datdot Substrate Pallet - Solidarity payments as part of rewards, depends on pallet-orchard"
 
 [package.metadata.docs.rs]
 targets = ["x86_64-unknown-linux-gnu"]
