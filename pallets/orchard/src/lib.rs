@@ -4,7 +4,7 @@ pub mod weights;
 use codec::Codec;
 use sp_std::prelude::*;
 use sp_std::fmt::Debug;
-use frame_support::{Parameter, decl_error, decl_event, decl_module, decl_storage, error::BadOrigin, fail, traits::{Currency, ExistenceRequirement, Get, Imbalance, LockableCurrency, WithdrawReason, WithdrawReasons}, transactional, unsigned::{
+use frame_support::{Parameter, decl_error, decl_event, decl_module, decl_storage, ensure, error::BadOrigin, fail, traits::{Currency, ExistenceRequirement, Get, Imbalance, LockableCurrency, WithdrawReason, WithdrawReasons}, transactional, unsigned::{
 		TransactionSource
 	}};
 use frame_system::{
@@ -36,7 +36,8 @@ decl_event!(
 
 decl_error! {
 	pub enum orchardError for Module<T: Config> {
-		PermissionError
+		PermissionError,
+		AmountError
     }
 }
 
@@ -90,6 +91,7 @@ decl_module!{
 			let account = ensure_signed(origin)?;
 			let mut reasons = WithdrawReasons::none();
 			reasons.toggle(WithdrawReason::Transfer);
+			ensure!(amount > T::MinimumContributionAmount::get(), orchardError::<T>::AmountError);
 			let withdraw_result = T::UnderlyingCurrency::withdraw(
 				&account,
 				amount,
@@ -107,9 +109,16 @@ decl_module!{
 							&account,
 							unsuccessful_amount
 						)
-					});
+					}).map_err(|x|{
+						T::UnderlyingCurrency::resolve_creating(
+							&account,
+							x
+						);
+					}).ok();
 				},
-				Err(err) => ()
+				Err(err) => {
+					fail!(err);
+				}
 			};
         }
 	}
@@ -152,6 +161,7 @@ impl<T: Config> InterceptableReward<T::AccountId, T::UnderlyingCurrency> for Mod
 		let mut percent_count: Percent = Percent::zero();
 		let mut intercept_count: u8 = 0;
 		let raw_amount = amount.peek().clone();
+		if raw_amount < T::MinimumContributionAmount::get(){return Err(amount);}
 		//take intercepts from vec until percent == 100 OR intercept count == max
 		//if intercept_count is not max, "expand" each intercept to it's own intercepts
 		// until intercept_count >= max
