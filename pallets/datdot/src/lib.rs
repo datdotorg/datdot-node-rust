@@ -10,22 +10,13 @@ use sp_std::collections::btree_set::BTreeSet;
 use sp_std::iter::Take;
 use sp_std::cmp::Ordering;
 use sp_std::boxed::Box;
-use frame_support::{
-	decl_module,
-	decl_storage,
-	decl_event,
-	decl_error,
-	debug::native,
-	fail,
-	ensure,
-	Parameter,
-	storage::{
+use frame_support::{Parameter, debug::native, decl_error, decl_event, decl_module, decl_storage, dispatch::PostDispatchInfo, ensure, fail, storage::{
 		StorageMap,
 		StorageValue,
 		IterableStorageMap,
 		IterableStorageDoubleMap,
-	},
-	traits::{
+	}, traits::{
+		UnfilteredDispatchable,
 		EnsureOrigin,
 		Get,
 		Randomness,
@@ -34,20 +25,16 @@ use frame_support::{
 			DispatchTime
 		},
 		LockableCurrency
-	},
-	weights::{
-		Pays,
-		DispatchClass::{
+	}, weights::{DispatchClass::{
 			Operational,
-		}
-	},
-};
+		}, GetDispatchInfo, Pays, extract_actual_weight}};
 use sp_std::convert::{
 	TryInto,
 };
 use frame_system::{
 	self as system,
 	ensure_signed,
+	ensure_unsigned,
 	ensure_root,
 	RawOrigin
 };
@@ -108,6 +95,9 @@ pub trait Trait: system::Trait{
 	Parameter + Member + MaybeSerializeDeserialize + Debug + MaybeDisplay + SimpleBitOps
 	+ Default + Copy + CheckEqual + sp_std::hash::Hash + AsRef<[u8]> + AsMut<[u8]>;
 	type Randomness: Randomness<<Self as system::Trait>::Hash>;
+	type SubCall: Parameter + Dispatchable<Origin=Self::Origin, PostInfo=PostDispatchInfo>
+		+ GetDispatchInfo + From<frame_system::Call<Self>>
+		+ UnfilteredDispatchable<Origin=Self::Origin>;
 	// ---
 
 	//CONSTS
@@ -881,6 +871,21 @@ decl_module!{
 					Self::deposit_event(Event::AttestationReportFailed(attestation_id.clone()));
 				}
 			}
+		}
+
+		#[weight = (100000, Operational, Pays::No)]
+		fn dat_extrinsic(origin, pubkey: T::AccountId, data: (T::SubCall, ed25519::Signature)){
+			let mut origin = origin;
+			let call = data.0;
+			ensure_unsigned(origin)?;
+			origin.set_caller_from(frame_system::RawOrigin::Signed(pubkey));
+			let info = call.get_dispatch_info();
+			let result = call.dispatch(origin);
+			let weight = extract_actual_weight(&result, &info);
+			result.map_err(|mut err| {
+				err.post_info = Some(weight).into();
+				err
+			}).map(|_| Some(weight).into())
 		}
 	}
 }
