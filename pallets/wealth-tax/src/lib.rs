@@ -330,9 +330,11 @@ impl<T: Trait> Module<T> {
 					match lock.peek().cmp(&utxo.peek()) {
 					    std::cmp::Ordering::Less => {
 							//lock has less value than balance, free some
-							let (new_utxo, difference_imbalance) = utxo.split(lock.peek());
+							let (mut new_utxo, mut difference_imbalance) = utxo.split(lock.peek());
 							//either both deposit&withdrawal succeed simultaneously, or nothing happens.
+							difference_imbalance.permissions = WithdrawReasons::all();
 							if let Ok(_) = Self::resolve_into_existing(who, difference_imbalance){
+								new_utxo.permissions = lock.permissions;
 								UTXOStore::<T>::insert(who, UTXOIdType::UTXO(lock_id.into()), new_utxo);
 							}
 						},
@@ -344,7 +346,8 @@ impl<T: Trait> Module<T> {
 							let difference = lock.peek() - utxo.peek();
 							if let Ok(difference_imbalance) = Self::withdraw(who, difference, WithdrawReasons::all(), ExistenceRequirement::KeepAlive){
 								//account has enough balance to lock - do something
-								let new_utxo = utxo.merge(difference_imbalance);
+								let mut new_utxo = utxo.merge(difference_imbalance);
+								new_utxo.permissions = lock.permissions;
 								UTXOStore::<T>::insert(who, UTXOIdType::UTXO(lock_id.into()), new_utxo);
 							}
 						}
@@ -353,14 +356,16 @@ impl<T: Trait> Module<T> {
 				(Some(lock), None) => {
 					//there is a lock, but it has no locked value
 					//we make best effort to move free balance into the lock
-					if let Ok(new_utxo) = Self::withdraw(who, lock.peek(), WithdrawReasons::all(), ExistenceRequirement::KeepAlive){
+					if let Ok(mut new_utxo) = Self::withdraw(who, lock.peek(), WithdrawReasons::all(), ExistenceRequirement::KeepAlive){
 						//account has enough balance to lock - do something
+						new_utxo.permissions = lock.permissions;
 						UTXOStore::<T>::insert(who, UTXOIdType::UTXO(lock_id.into()), new_utxo);
 					}
 				},
-				(None, Some(utxo)) => {
+				(None, Some(mut utxo)) => {
 					//there is a locked amount, but no corresponding lock
 					//we move the locked amount into freed balance
+					utxo.permissions = WithdrawReasons::all();
 					if let Ok(_) = Self::resolve_into_existing(who, utxo){
 						UTXOStore::<T>::remove(who, UTXOIdType::UTXO(lock_id.into()));
 					}
