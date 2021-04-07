@@ -13,7 +13,7 @@ use frame_support::{Parameter, decl_error, decl_event, decl_module, decl_storage
 		StorageValue,
 		IterableStorageMap,
 		IterableStorageDoubleMap,
-	}, traits::{Currency, EnsureOrigin, Get, Imbalance, LockIdentifier, LockableCurrency, SignedImbalance, TryDrop, WithdrawReason, WithdrawReasons}, weights::{
+	}, traits::{Currency, EnsureOrigin, ExistenceRequirement, Get, Imbalance, LockIdentifier, LockableCurrency, SignedImbalance, TryDrop, WithdrawReason, WithdrawReasons}, weights::{
 		Pays,
 		DispatchClass::{
 			Operational,
@@ -298,26 +298,81 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
+	fn utxo_id_to_lock_id(utxo_id: UTXOIdType<Vec<u8>>) -> Option<LockIdentifier> {
+		let mut id_holder: LockIdentifier = LockIdentifier::default();
+				match utxo_id {
+					UTXOIdType::Lock(i_d) => {
+						//check the len to avoid panic on copy-from-slice
+						if !LockIdentifier::default().len() == i_d.len(){
+							None
+						} else {
+							id_holder.copy_from_slice(&i_d);
+							Some(id_holder)
+						}
+					},
+					_ => None
+				}
+	}
+
 	fn refill_locks(who: &T::AccountId, maybe_id: Option<LockIdentifier>){
 		if let Some(lock_id) = maybe_id {
+			let block_number = <system::Module<T>>::block_number();
 			match 
 			(
 				UTXOStore::<T>::get(who, UTXOIdType::Lock(lock_id.into())),
 				UTXOStore::<T>::get(who, UTXOIdType::UTXO(lock_id.into()))
 			){
+				(Some(mut lock), Some(mut utxo)) => {
+					lock.update(block_number);
+					utxo.update(block_number);
+					//lock already exists and locked amount already exists
+					//compare sizes and resolve by pulling or pushing from free balance
+					match lock.peek().cmp(&utxo.peek()) {
+					    std::cmp::Ordering::Less => {
+							//lock has less value than balance, free some
+							let (new_utxo, difference_imbalance) = utxo.split(lock.peek());
+							//either both deposit&withdrawal succeed simultaneously, or nothing happens.
+							if let Ok(_) = Self::resolve_into_existing(who, difference_imbalance){
+								UTXOStore::<T>::insert(who, UTXOIdType::UTXO(lock_id.into()), new_utxo);
+							}
+						},
+					    std::cmp::Ordering::Equal => {
+							// nothing to do.
+						},
+					    std::cmp::Ordering::Greater => {
+							//lock has more value than balance, lock some more
+							let difference = lock.peek() - utxo.peek();
+							if let Ok(difference_imbalance) = Self::withdraw(who, difference, WithdrawReasons::all(), ExistenceRequirement::KeepAlive){
+								//account has enough balance to lock - do something
+								let new_utxo = utxo.merge(difference_imbalance);
+								UTXOStore::<T>::insert(who, UTXOIdType::UTXO(lock_id.into()), new_utxo);
+							}
+						}
+					}
+				},
+				(Some(lock), None) => {
+					//there is a lock, but it has no locked value
+					//we make best effort to move free balance into the lock
+					if let Ok(new_utxo) = Self::withdraw(who, lock.peek(), WithdrawReasons::all(), ExistenceRequirement::KeepAlive){
+						//account has enough balance to lock - do something
+						UTXOStore::<T>::insert(who, UTXOIdType::UTXO(lock_id.into()), new_utxo);
+					}
+				},
+				(None, Some(utxo)) => {
+					//there is a locked amount, but no corresponding lock
+					//we move the locked amount into freed balance
+					if let Ok(_) = Self::resolve_into_existing(who, utxo){
+						UTXOStore::<T>::remove(who, UTXOIdType::UTXO(lock_id.into()));
+					}
+				},
 				_ => ()
+
+
 			}
 		} else {
 			let all_locks: Vec<LockIdentifier> =
 			UTXOStore::<T>::iter_prefix(who).filter_map(|(id, _)|{
-				let mut id_holder: [u8; 8] = [0,0,0,0,0,0,0,0];
-				match id {
-					UTXOIdType::Lock(i_d) => {
-						id_holder.copy_from_slice(&i_d);
-						Some(id_holder)
-					},
-					_ => None
-				}
+				Self::utxo_id_to_lock_id(id)
 			}).collect();
 			for lock_id_value in all_locks {
 				
@@ -514,10 +569,24 @@ impl<T: Trait> Currency<T::AccountId> for Module<T>{
 				if let Some(surplus) = merged.peek().checked_sub(&value) {
 					let utxo_change =
 						Self::new_utxo(surplus, input.0, permissions);
-					UTXOStore::<T>::insert(who, utxo_id, utxo_change);
+					UTXOStore::<T>::insert(who, utxo_id.clone(), utxo_change);
+				}
+				if let Some(lock_id) = Self::utxo_id_to_lock_id(utxo_id) {
+					//we only refill a lock if we withdrew from one.
+					//refill_locks calls withdraw internally, pulling from free balance
+					//so we must ensure that EITHER 
+					// we never create locks with WithdrawReason::all()
+					//OR
+					// if we create a lock with WithdrawReason::all(),
+					// we do not refill it automatically on withdrawal
+					//..
+					//for sake of flexibility and api correctness
+					//we add an additional check (the second option).
+					if !permissions.is_all(){
+						Self::refill_locks(who, Some(lock_id));
+					}
 				}
 			}
-			Self::refill_locks(who, None);
 			Ok(merged)
 		} else {
 			Err(WealthError::<T>::InsufficientLiquidity.into())
