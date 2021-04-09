@@ -209,6 +209,15 @@ pub enum UTXOIdType<IdType> {
 	UTXO(IdType)
 }
 
+impl<IdType> UTXOIdType<IdType> {
+	fn peek(&self) -> &IdType {
+		match self {
+			Self::Lock(id) => id,
+			Self::UTXO(id) => id
+		}
+	}
+}
+
 pub trait Trait: system::Trait{
 	type Event: From<Event> + Into<<Self as system::Trait>::Event>;
 	type Balance: Parameter + Member + AtLeast32BitUnsigned + Codec + Default + Copy +
@@ -422,6 +431,32 @@ impl<T: Trait> Module<T> {
 			start: <system::Module<T>>::block_number(),
 			rate: DecayRate::get(id),
 			permissions: permissions
+		}
+	}
+
+	fn custom_issue(who: T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
+		//we get the existing balance if any exists
+		let old_balance;
+		if let Some(current_balance) = UTXOStore::<T>::get(&who, id.clone()){
+			old_balance = current_balance;
+		} else {
+			old_balance = AgedUTXO::default();
+		}
+		//first increase issuance.
+		drop(Self::issue(value));
+		let new_balance = Self::new_utxo(value, id.peek().to_vec(), permissions);
+		//and store the merged version.
+		UTXOStore::<T>::insert(&who, id.clone(), old_balance.merge(new_balance));
+	}
+
+	fn custom_burn(who: T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>){
+		//we get the existing balance if any exists
+		if let Some(old_balance) = UTXOStore::<T>::get(&who, id.clone()){
+			let (to_burn, to_keep) = old_balance.split(value);
+			//and store the merged version.
+			UTXOStore::<T>::insert(&who, id.clone(), to_keep);
+			//finally decrease issuance.
+			drop(Self::burn(to_burn.peek()));
 		}
 	}
 }
@@ -707,7 +742,7 @@ impl<T: Trait> LockableCurrency<T::AccountId> for Module<T> {
 			let max_utxo = Self::new_utxo(
 				amount.max(current_lock.peek()),
 				id.into(),
-				reasons.bitor(current_lock.permissions)
+				reasons.bitand(current_lock.permissions)
 			);
 			UTXOStore::<T>::insert(who, UTXOIdType::Lock(id.into()), max_utxo);
 		} else {
