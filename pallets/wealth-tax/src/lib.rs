@@ -13,7 +13,7 @@ use frame_support::{Parameter, decl_error, decl_event, decl_module, decl_storage
 		StorageValue,
 		IterableStorageMap,
 		IterableStorageDoubleMap,
-	}, traits::{Currency, EnsureOrigin, ExistenceRequirement, Get, Imbalance, LockIdentifier, LockableCurrency, SignedImbalance, TryDrop, WithdrawReason, WithdrawReasons}, weights::{
+	}, traits::{Currency, EnsureOrigin, ExistenceRequirement, Get, Imbalance, LockIdentifier, LockableCurrency, ReservableCurrency, SignedImbalance, TryDrop, WithdrawReason, WithdrawReasons}, weights::{
 		Pays,
 		DispatchClass::{
 			Operational,
@@ -252,7 +252,33 @@ decl_storage! {
 
 decl_module!{
 	pub struct Module<T: Trait> for enum Call where origin: T::Origin {
-		
+		fn deposit_event() = default;
+		type Error = WealthError<T>;
+
+		#[weight = 0]
+		fn transfer(origin, dest: T::AccountId, value: T::Balance){
+			let source = ensure_signed(origin)?;
+			<Self as Currency<T::AccountId>>::transfer(&source, &dest, value, ExistenceRequirement::AllowDeath)?;
+		}
+
+		#[weight = 0]
+		fn transfer_keep_alive(origin, dest: T::AccountId, value: T::Balance){
+			let source = ensure_signed(origin)?;
+			<Self as Currency<T::AccountId>>::transfer(&source, &dest, value, ExistenceRequirement::KeepAlive)?;
+		}
+
+		#[weight = 0]
+		fn set_rate_for(origin, rate_id: Vec<u8>, rate: Perbill){
+			ensure_root(origin)?;
+			<DecayRate>::insert(rate_id, rate);
+		}
+
+		#[weight = 0]
+		fn recalculate_locks(origin, who: T::AccountId){
+			ensure_signed(origin)?;
+			Self::refill_locks(&who, None);
+		}
+
     }
 }
 
@@ -329,7 +355,7 @@ impl<T: Trait> Module<T> {
 					//compare sizes and resolve by pulling or pushing from free balance
 					match lock.peek().cmp(&utxo.peek()) {
 					    std::cmp::Ordering::Less => {
-							//lock has less value than balance, free some
+							//lock has less value than utxo, free some
 							let (mut new_utxo, mut difference_imbalance) = utxo.split(lock.peek());
 							//either both deposit&withdrawal succeed simultaneously, or nothing happens.
 							difference_imbalance.permissions = WithdrawReasons::all();
@@ -342,7 +368,7 @@ impl<T: Trait> Module<T> {
 							// nothing to do.
 						},
 					    std::cmp::Ordering::Greater => {
-							//lock has more value than balance, lock some more
+							//lock has more value than utxo, lock some more
 							let difference = lock.peek() - utxo.peek();
 							if let Ok(difference_imbalance) = Self::withdraw(who, difference, WithdrawReasons::all(), ExistenceRequirement::KeepAlive){
 								//account has enough balance to lock - do something
@@ -354,7 +380,7 @@ impl<T: Trait> Module<T> {
 					}
 				},
 				(Some(lock), None) => {
-					//there is a lock, but it has no locked value
+					//there is a lock, but it has no utxo
 					//we make best effort to move free balance into the lock
 					if let Ok(mut new_utxo) = Self::withdraw(who, lock.peek(), WithdrawReasons::all(), ExistenceRequirement::KeepAlive){
 						//account has enough balance to lock - do something
@@ -363,7 +389,7 @@ impl<T: Trait> Module<T> {
 					}
 				},
 				(None, Some(mut utxo)) => {
-					//there is a locked amount, but no corresponding lock
+					//there is a utxo, but no corresponding lock
 					//we move the locked amount into freed balance
 					utxo.permissions = WithdrawReasons::all();
 					if let Ok(_) = Self::resolve_into_existing(who, utxo){
