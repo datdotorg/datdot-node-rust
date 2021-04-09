@@ -270,7 +270,7 @@ decl_module!{
 		#[weight = 0]
 		fn set_rate_for(origin, rate_id: Vec<u8>, rate: Perbill){
 			ensure_root(origin)?;
-			<DecayRate>::insert(rate_id, rate);
+			Self::set_rate(rate_id, rate);
 		}
 
 		#[weight = 0]
@@ -285,6 +285,10 @@ decl_module!{
 
 
 impl<T: Trait> Module<T> {
+
+	fn set_rate(rate_id: Vec<u8>, rate: Perbill){
+		<DecayRate>::insert(rate_id, rate);
+	}
 	// get UTXOs that satisfy a specific withdrawal reason (optionally, up to a given amount)
 	// if an insufficient amount/none are found, returns None.
 	// second item in returned tuple represents the surplus amount in the final tuple, None if exact or no amount was requested.
