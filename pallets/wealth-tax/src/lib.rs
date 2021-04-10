@@ -1,13 +1,14 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
+use std::hash::Hash;
 
-use std::ops::{BitAnd, BitOr, Mul};
-
-use sp_runtime::{Perbill, RuntimeDebug, traits::{AtLeast32Bit, AtLeast32BitUnsigned, CheckedSub, MaybeSerializeDeserialize, Member, Saturating, Scale, Zero}};
+use sp_core::{H512, Hasher};
+use sp_runtime::{AnySignature, DispatchError, Perbill, RuntimeDebug, traits::{AtLeast32Bit, AtLeast32BitUnsigned, CheckedSub, MaybeSerializeDeserialize, Member, Saturating, Scale, Verify, Zero}};
 use sp_std::prelude::*;
 use sp_std::convert::TryInto;
 use sp_std::fmt::Debug;
 use sp_std::mem;
+use sp_std::{collections::btree_map::BTreeMap, ops::{BitAnd, BitOr, Mul}};
 use frame_support::{Parameter, decl_error, decl_event, decl_module, decl_storage, ensure, fail, storage::{
 		StorageMap,
 		StorageValue,
@@ -226,6 +227,9 @@ pub trait Trait: system::Trait{
 	+ Scale<Self::BlockNumber, Output = Self::Moment> + Copy;
 	type MaxLocks: Get<u32>;	
 	type MinimumBalance: Get<Self::Balance>;
+	type CommitmentAmount: Get<Self::Balance>;
+	type CommitmentId: Get<Vec<u8>>;
+	type SecretHasher: Hasher<Out = H512>;
 }
         
 decl_event!(
@@ -256,6 +260,8 @@ decl_storage! {
 			hasher(identity) Vec<u8> 
 				=>
 			Perbill;
+		pub CommitmentCount: map hasher(blake2_128_concat) T::AccountId => u32;
+		pub CommitmentSecrets: map hasher(blake2_128_concat) H512 => Option<(T::AccountId, T::AccountId)>;
     }
 }
 
@@ -286,6 +292,18 @@ decl_module!{
 		fn recalculate_locks(origin, who: T::AccountId){
 			ensure_signed(origin)?;
 			Self::refill_locks(&who, None);
+		}
+
+		//irreversibly commit some amount to be used for utility and not spending,
+		//secret is optional for use in PoWVerifier trait - hash of a secret and 
+		//the recipient of the commitment.
+		#[weight = 0]
+		fn usage_commitment(origin, secret: Option<(H512, T::AccountId)>){
+			let who = ensure_signed(origin)?;
+			Self::inc_commit(who.clone())?;
+			if let Some((hash, author)) = secret {
+				CommitmentSecrets::<T>::insert(hash, (who, author));
+			}
 		}
 
     }
@@ -434,7 +452,7 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn custom_issue(who: T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
+	fn custom_issue(who: &T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
 		//we get the existing balance if any exists
 		let old_balance;
 		if let Some(current_balance) = UTXOStore::<T>::get(&who, id.clone()){
@@ -449,14 +467,54 @@ impl<T: Trait> Module<T> {
 		UTXOStore::<T>::insert(&who, id.clone(), old_balance.merge(new_balance));
 	}
 
-	fn custom_burn(who: T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>){
+	fn custom_resolve(who: &T::AccountId, imbalance: AgedUTXO<T::Balance, T::BlockNumber>, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
+		//we get the existing balance if any exists
+		let old_balance;
+		if let Some(current_balance) = UTXOStore::<T>::get(&who, id.clone()){
+			old_balance = current_balance;
+		} else {
+			old_balance = AgedUTXO::default();
+		}
+		//and store the merged version.
+		UTXOStore::<T>::insert(&who, id.clone(), old_balance.merge(imbalance));
+	}
+
+	fn custom_burn(who: &T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>) -> Result<(), ()>{
 		//we get the existing balance if any exists
 		if let Some(old_balance) = UTXOStore::<T>::get(&who, id.clone()){
 			let (to_burn, to_keep) = old_balance.split(value);
-			//and store the merged version.
-			UTXOStore::<T>::insert(&who, id.clone(), to_keep);
-			//finally decrease issuance.
-			drop(Self::burn(to_burn.peek()));
+			if to_burn.peek() < value {
+				//balance was insufficient
+				Err(())
+			} else {
+				//and store the merged version.
+				UTXOStore::<T>::insert(&who, id.clone(), to_keep);
+				//finally decrease issuance.
+				drop(Self::burn(to_burn.peek()));
+				Ok(())
+			}
+		} else {
+			//balance didn't exist
+			Err(())
+		}
+	}
+
+	fn inc_commit(who: T::AccountId) -> Result<(), DispatchError>{
+		let id = T::CommitmentId::get();
+		let commitment_count = CommitmentCount::<T>::get(&who);
+		let imbalance = Self::withdraw(&who, T::CommitmentAmount::get(), WithdrawReason::Transfer.into(), ExistenceRequirement::KeepAlive)?;
+		Self::custom_resolve(&who, imbalance, UTXOIdType::UTXO(id), WithdrawReasons::except(WithdrawReason::Transfer.into()));
+		CommitmentCount::<T>::insert(who, commitment_count+1);
+		Ok(())
+	}
+
+	fn consume_commit(who: T::AccountId) -> Result<(), ()>{
+		let commitment_count = CommitmentCount::<T>::get(&who);
+		if let Some(consumed_count) = commitment_count.checked_sub(1){
+			CommitmentCount::<T>::insert(&who, consumed_count);
+			Ok(())
+		} else {
+			Err(())
 		}
 	}
 }
@@ -600,7 +658,7 @@ impl<T: Trait> Currency<T::AccountId> for Module<T>{
     fn deposit_into_existing(
 		who: &T::AccountId,
 		value: Self::Balance
-	) -> Result<Self::PositiveImbalance, sp_runtime::DispatchError> {
+	) -> Result<Self::PositiveImbalance, DispatchError> {
         Ok(Self::deposit_creating(who, value))
     }
 
@@ -625,7 +683,7 @@ impl<T: Trait> Currency<T::AccountId> for Module<T>{
 		value: Self::Balance,
 		reasons: frame_support::traits::WithdrawReasons,
 		_liveness: frame_support::traits::ExistenceRequirement,
-	) -> Result<Self::NegativeImbalance, sp_runtime::DispatchError> {
+	) -> Result<Self::NegativeImbalance, DispatchError> {
 		let transfer_reason = WithdrawReasons::from(reasons);
         let maybe_inputs = Self::filter_utxos_for(who, transfer_reason, Some(value));
 		if let Some(inputs) = maybe_inputs {
@@ -760,6 +818,27 @@ impl<T: Trait> LockableCurrency<T::AccountId> for Module<T> {
 			Self::resolve_creating(who, lock_utxo);
 		} else {
 			//no lock exists to remove, so noop.
+		}
+    }
+}
+
+impl<T: Trait> pallet_onboard::traits::PowVerifier<T::AccountId, H512> for Module<T> {
+	//"PoW" is the preimage of the hash
+    fn verify(author: T::AccountId, pow: H512) -> bool {
+        if let Some((committed, rewarded)) = 
+			CommitmentSecrets::<T>::get(T::SecretHasher::hash(&pow.to_fixed_bytes()))
+		{
+			if rewarded == author { //check this first to gate potential commitment consumption
+				if let Ok(_) = Self::consume_commit(committed) {
+					true
+				} else {
+					false
+				}
+			} else {
+				false
+			}
+		} else {
+			false
 		}
     }
 }

@@ -21,6 +21,7 @@ sp-std = { version = "2.0.0", default-features = false }
 sp-io = { version = "2.0.0", default-features = false }
 sp-core = { version = "2.0.0", default-features = false }
 sp-arithmetic = { version = "2.0.0", default-features = false }
+pallet-onboard = { version = "2.0.0", default-features = false, path = "../onboard/" }
 
 frame-benchmarking = { version = "2.0.0", default-features = false, optional = true }
 

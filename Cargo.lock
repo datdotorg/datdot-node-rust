@@ -4070,6 +4070,7 @@ dependencies = [
  "frame-benchmarking",
  "frame-support",
  "frame-system",
+ "pallet-onboard",
  "parity-scale-codec",
  "serde",
  "sp-arithmetic",
