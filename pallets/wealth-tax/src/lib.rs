@@ -313,7 +313,7 @@ decl_module!{
 
 impl<T: Trait> Module<T> {
 
-	fn set_rate(rate_id: Vec<u8>, rate: Perbill){
+	pub fn set_rate(rate_id: Vec<u8>, rate: Perbill){
 		<DecayRate>::insert(rate_id, rate);
 	}
 	// get UTXOs that satisfy a specific withdrawal reason (optionally, up to a given amount)
@@ -371,7 +371,7 @@ impl<T: Trait> Module<T> {
 				}
 	}
 
-	fn refill_locks(who: &T::AccountId, maybe_id: Option<LockIdentifier>){
+	pub fn refill_locks(who: &T::AccountId, maybe_id: Option<LockIdentifier>){
 		if let Some(lock_id) = maybe_id {
 			let block_number = <system::Module<T>>::block_number();
 			match 
@@ -452,7 +452,7 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn custom_issue(who: &T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
+	pub fn custom_issue(who: &T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
 		//we get the existing balance if any exists
 		let old_balance;
 		if let Some(current_balance) = UTXOStore::<T>::get(&who, id.clone()){
@@ -467,7 +467,7 @@ impl<T: Trait> Module<T> {
 		UTXOStore::<T>::insert(&who, id.clone(), old_balance.merge(new_balance));
 	}
 
-	fn custom_resolve(who: &T::AccountId, imbalance: AgedUTXO<T::Balance, T::BlockNumber>, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
+	pub fn custom_resolve(who: &T::AccountId, imbalance: AgedUTXO<T::Balance, T::BlockNumber>, id: UTXOIdType<Vec<u8>>, permissions: WithdrawReasons){
 		//we get the existing balance if any exists
 		let old_balance;
 		if let Some(current_balance) = UTXOStore::<T>::get(&who, id.clone()){
@@ -479,7 +479,7 @@ impl<T: Trait> Module<T> {
 		UTXOStore::<T>::insert(&who, id.clone(), old_balance.merge(imbalance));
 	}
 
-	fn custom_burn(who: &T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>) -> Result<(), ()>{
+	pub fn custom_burn(who: &T::AccountId, value: T::Balance, id: UTXOIdType<Vec<u8>>) -> Result<(), ()>{
 		//we get the existing balance if any exists
 		if let Some(old_balance) = UTXOStore::<T>::get(&who, id.clone()){
 			let (to_burn, to_keep) = old_balance.split(value);
@@ -499,7 +499,7 @@ impl<T: Trait> Module<T> {
 		}
 	}
 
-	fn inc_commit(who: T::AccountId) -> Result<(), DispatchError>{
+	pub fn inc_commit(who: T::AccountId) -> Result<(), DispatchError>{
 		let id = T::CommitmentId::get();
 		let commitment_count = CommitmentCount::<T>::get(&who);
 		let imbalance = Self::withdraw(&who, T::CommitmentAmount::get(), WithdrawReason::Transfer.into(), ExistenceRequirement::KeepAlive)?;
@@ -508,7 +508,7 @@ impl<T: Trait> Module<T> {
 		Ok(())
 	}
 
-	fn consume_commit(who: T::AccountId) -> Result<(), ()>{
+	pub fn consume_commit(who: T::AccountId) -> Result<(), ()>{
 		let commitment_count = CommitmentCount::<T>::get(&who);
 		if let Some(consumed_count) = commitment_count.checked_sub(1){
 			CommitmentCount::<T>::insert(&who, consumed_count);
@@ -825,11 +825,14 @@ impl<T: Trait> LockableCurrency<T::AccountId> for Module<T> {
 impl<T: Trait> pallet_onboard::traits::PowVerifier<T::AccountId, H512> for Module<T> {
 	//"PoW" is the preimage of the hash
     fn verify(author: T::AccountId, pow: H512) -> bool {
+		let secret_hash = T::SecretHasher::hash(&pow.to_fixed_bytes());
         if let Some((committed, rewarded)) = 
-			CommitmentSecrets::<T>::get(T::SecretHasher::hash(&pow.to_fixed_bytes()))
+			CommitmentSecrets::<T>::get(secret_hash)
 		{
 			if rewarded == author { //check this first to gate potential commitment consumption
 				if let Ok(_) = Self::consume_commit(committed) {
+					// consume secret
+					CommitmentSecrets::<T>::remove(secret_hash);
 					true
 				} else {
 					false
