@@ -5,7 +5,7 @@ a p2p solution for hosting files with Dat protocol ([...more](https://github.com
 join our [telegram](https://t.me/joinchat/CgTftxXJvp6iYayqDjP7lQ) or [gitter](https://gitter.im/playproject-io/community) chat.
 
 Clone this from [Radicle](https://radicle.xyz):
-`rad:git:hwd1yre84t7u59qhg5itq7ut6c5oa7r8fmmyb43rx4mjbto74jsr1n68e1w`
+`rad:git:hnrkrtkf5e393g6ygndd7jky5z5ko9xwpg3yy`
 
 ![](https://i.imgur.com/oGPIbZQ.jpg)
 
