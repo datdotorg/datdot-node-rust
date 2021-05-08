@@ -42,6 +42,7 @@ pub mod weights;
 use codec::{Decode, Encode};
 use sp_std::prelude::*;
 use sp_std::fmt::Debug;
+use sp_std::marker::PhantomData;
 use frame_support::{
 	decl_error,
 	decl_event, 
@@ -75,6 +76,51 @@ use weights::WeightInfo;
 use pallet_orchard::interception::{InterceptableReward, Intercepted, Destination};
 
 type BalanceOf<T> = <<T as Config>::UnderlyingCurrency as Currency<<T as system::Trait>::AccountId>>::Balance;
+
+//A struct to allow PoW verification via one of two mechanisms onchain
+pub struct OrVerify<VerifierOne, VerifierTwo, Author, PowType> {
+	_v1: PhantomData<VerifierOne>,
+	_v2: PhantomData<VerifierTwo>,
+	_oa: PhantomData<Author>,
+	_op: PhantomData<PowType>,
+}
+
+impl<
+	AT1, 
+	AT2, 
+	PT1, 
+	PT2, 
+	V1: PowVerifier<AT1, PT1>,
+	V2: PowVerifier<AT2, PT2>
+> PowVerifier <
+	Either<AT1, AT2>, 
+	Either<PT1, PT2>
+> for OrVerify<
+	V1, 
+	V2, 
+	Either<AT1, AT2>, 
+	Either<PT1, PT2>
+> {
+	fn verify(author: Either<AT1, AT2>, pow: Either<PT1, PT2>) -> bool {
+		match (author, pow) {
+		    (Either::Left(author), Either::Left(pow)) => {
+				V1::verify(author, pow)
+			}
+		    (Either::Left(_), Either::Right(_)) => {
+				//author type does not match the pow type
+				false
+			}
+		    (Either::Right(_), Either::Left(_)) => {
+				//author type does not match the pow type
+				false
+			}
+		    (Either::Right(author), Either::Right(pow)) => {
+				V2::verify(author, pow)
+			}
+		}
+	}
+}
+
 pub trait Config: system::Trait{
 	type Event: From<Event<Self>> + Into<<Self as system::Trait>::Event>;
 	type UnderlyingCurrency: Currency<Self::AccountId> + LockableCurrency<Self::AccountId>;
