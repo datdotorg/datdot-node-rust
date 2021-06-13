@@ -78,12 +78,9 @@ use pallet_orchard::interception::{InterceptableReward, Intercepted, Destination
 type BalanceOf<T> = <<T as Config>::UnderlyingCurrency as Currency<<T as system::Trait>::AccountId>>::Balance;
 
 //A struct to allow PoW verification via one of two mechanisms onchain
-pub struct OrVerify<VerifierOne, VerifierTwo, Author, PowType> {
-	_v1: PhantomData<VerifierOne>,
-	_v2: PhantomData<VerifierTwo>,
-	_oa: PhantomData<Author>,
-	_op: PhantomData<PowType>,
-}
+pub struct OrVerify<VerifierOne, VerifierTwo, Author, PowType>(
+	PhantomData<(VerifierOne, VerifierTwo, Author, PowType)>,
+);
 
 impl<
 	AT1, 
