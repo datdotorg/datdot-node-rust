@@ -1,6 +1,6 @@
 [package]
 name = "pallet-wealth-tax"
-version = "2.0.0"
+version = "3.0.0"
 authors = ["Datdot Authors"]
 edition = "2018"
 license = "Unlicense"
@@ -12,18 +12,18 @@ description = "Datdot Substrate Pallet - utxo backed system for a wealth tax in 
 targets = ["x86_64-unknown-linux-gnu"]
 
 [dependencies]
-serde = { version = "1.0.114", optional = true }
-codec = { package = "parity-scale-codec", version = "1.3.1", default-features = false }
-frame-support = { version = "2.0.0", default-features = false }
-frame-system = { version = "2.0.0", default-features = false }
-sp-runtime = { version = "2.0.0", default-features = false }
-sp-std = { version = "2.0.0", default-features = false }
-sp-io = { version = "2.0.0", default-features = false }
-sp-core = { version = "2.0.0", default-features = false }
-sp-arithmetic = { version = "2.0.0", default-features = false }
-pallet-onboard = { version = "2.0.0", default-features = false, path = "../onboard/" }
+serde = { version = "1.0.125", optional = true }
+codec = { package = "parity-scale-codec", version = "2.1.1", default-features = false }
+frame-support = { version = "3.0.0", default-features = false }
+frame-system = { version = "3.0.0", default-features = false }
+sp-runtime = { version = "3.0.0", default-features = false }
+sp-std = { version = "3.0.0", default-features = false }
+sp-io = { version = "3.0.0", default-features = false }
+sp-core = { version = "3.0.0", default-features = false }
+sp-arithmetic = { version = "3.0.0", default-features = false }
+pallet-onboard = { version = "3.0.0", default-features = false, path = "../onboard/" }
 
-frame-benchmarking = { version = "2.0.0", default-features = false, optional = true }
+frame-benchmarking = { version = "3.1.0", default-features = false, optional = true }
 
 [features]
 default = ["std"]
