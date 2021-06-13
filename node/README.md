@@ -67,9 +67,7 @@ Purge the development chain's state:
 
 Start the development chain with detailed logging:
 
-```bash
-RUST_LOG=debug RUST_BACKTRACE=1 ./target/release/node-template -lruntime=debug --dev
-```
+Simply go to [substrate.dev](https://substrate.dev) and follow the [getting started](https://substrate.dev/docs/en/) instructions.
 
 ### Multi-Node Local Testnet
 
