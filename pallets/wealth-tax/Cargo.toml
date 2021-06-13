@@ -1,0 +1,42 @@
+[package]
+name = "pallet-wealth-tax"
+version = "3.0.0"
+authors = ["Datdot Authors"]
+edition = "2018"
+license = "Unlicense"
+homepage = "https://playproject.io"
+repository = "https://github.com/playproject-io/datdot-substrate"
+description = "Datdot Substrate Pallet - utxo backed system for a wealth tax in account based contexts"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+serde = { version = "1.0.125", optional = true }
+codec = { package = "parity-scale-codec", version = "2.1.1", default-features = false }
+frame-support = { version = "3.0.0", default-features = false }
+frame-system = { version = "3.0.0", default-features = false }
+sp-runtime = { version = "3.0.0", default-features = false }
+sp-std = { version = "3.0.0", default-features = false }
+sp-io = { version = "3.0.0", default-features = false }
+sp-core = { version = "3.0.0", default-features = false }
+sp-arithmetic = { version = "3.0.0", default-features = false }
+pallet-onboard = { version = "3.0.0", default-features = false, path = "../onboard/" }
+
+frame-benchmarking = { version = "3.1.0", default-features = false, optional = true }
+
+[features]
+default = ["std"]
+std = [
+	"serde",
+	"codec/std",
+	"sp-runtime/std",
+	"frame-benchmarking/std",
+	"frame-support/std",
+	"frame-system/std",
+	"sp-io/std",
+	"sp-core/std",
+	"sp-arithmetic/std",
+	"sp-std/std",
+]
+runtime-benchmarks = ["frame-benchmarking"]

@@ -1,0 +1,44 @@
+[package]
+name = "pallet-datdot-sman"
+version = "3.0.0"
+authors = ["Datdot Authors"]
+edition = "2018"
+license = "Unlicense"
+homepage = "https://playproject.io"
+repository = "https://github.com/playproject-io/datdot-substrate"
+description = "Datdot Substrate Pallet - Manage block producers and optionally reward them for the job"
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]
+
+[dependencies]
+serde = { version = "1.0.125", optional = true }
+codec = { package = "parity-scale-codec", version = "2.1.1", default-features = false }
+frame-support = { version = "3.0.0", default-features = false }
+frame-system = { version = "3.0.0", default-features = false }
+sp-runtime = { version = "3.0.0", default-features = false }
+sp-std = { version = "3.0.0", default-features = false }
+sp-io = { version = "3.0.0", default-features = false }
+sp-core = { version = "3.0.0", default-features = false }
+sp-arithmetic = { version = "3.0.0", default-features = false }
+pallet-session = { version = "3.0.0", default-features = false }
+pallet-datdot-jobs = { version = "3.0.0", default-features = false, path = "../datdot-jobs/" }
+
+frame-benchmarking = { version = "3.1.0", default-features = false, optional = true }
+
+[features]
+default = ["std"]
+std = [
+	"serde",
+	"codec/std",
+	"sp-runtime/std",
+	"frame-benchmarking/std",
+	"frame-support/std",
+	"frame-system/std",
+	"sp-io/std",
+	"sp-core/std",
+	"sp-arithmetic/std",
+	"sp-std/std",
+	"pallet-datdot-jobs/std"
+]
+runtime-benchmarks = ["frame-benchmarking"]
