@@ -21,6 +21,23 @@ to build the test node, run:
 
 add the `--release` flag to either of those commands to create a release build - debug and release builds will be located in `./target/release` or `./target/debug` respectively.
 
+### Note
+
+If you are having trouble building with the commands above, you can try this recipe (shared by @erangell)
+
+```bash
+git clone https://github.com/playproject-io/datdot-substrate.git
+curl --proto '=https' --tlsv1.2 https://sh.rustup.rs/ -sSf | sh
+rustup toolchain install nightly-2020-08-14
+curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+rustup default nightly-2020-08-14
+rustup update
+rustup update nightly-2020-08-14
+rustup target add wasm32-unknown-unknown --toolchain nightly-2020-08-14
+cargo +nightly-2020-08-14 check 
+cargo build -p datdot-node --release
+```
+
 ### Custom Types
 
 You can aggregate the custom types of any pallets in `datdot-node/pallets` by running: 
